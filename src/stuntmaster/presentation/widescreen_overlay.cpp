@@ -49,7 +49,7 @@ constexpr std::uint32_t maximum_dark_channel = 16U;
 
 void replaceX(std::uint32_t& position, std::int32_t x) noexcept {
     position = (position & 0xFFFF0000U) |
-        static_cast<std::uint16_t>(static_cast<std::int16_t>(x));
+        (static_cast<std::uint32_t>(x) & 0xFFFFU);
 }
 
 [[nodiscard]] std::int32_t rawX(

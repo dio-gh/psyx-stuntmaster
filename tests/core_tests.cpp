@@ -1211,10 +1211,13 @@ void widescreenDarkOverlaysReachWindowEdges() {
         (240U << 16U) | 512U,
     };
     assert(extendDarkOverlayToWidescreen(quad, 0, 0, 512U, wide));
-    assert(static_cast<std::int16_t>(quad[1]) == -85);
-    assert(static_cast<std::int16_t>(quad[2]) == 597);
-    assert(static_cast<std::int16_t>(quad[3]) == -85);
-    assert(static_cast<std::int16_t>(quad[4]) == 597);
+    // Compare the complete packed XY words. Release once sign-extended the
+    // negative left edge into the upper half, replacing y with -1 and turning
+    // this fullscreen quad into two visible diagonal triangles.
+    assert(quad[1] == 0x0000FFABU);
+    assert(quad[2] == 0x00000255U);
+    assert(quad[3] == 0x00F0FFABU);
+    assert(quad[4] == 0x00F00255U);
 
     // Retail animates fades and cinematic bars with a neutral grayscale
     // semi-transparent quad, including values far above near-black.
