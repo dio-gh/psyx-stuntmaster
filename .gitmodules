@@ -1,0 +1,3 @@
+[submodule "external/PsyCross"]
+	path = external/PsyCross
+	url = https://github.com/OpenDriver2/PsyCross.git

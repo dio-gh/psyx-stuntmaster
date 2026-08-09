@@ -1,0 +1,4 @@
+// Windows resource script: gives stuntmaster.exe its application icon.
+// Resource id 1 is the lowest icon id, so Explorer picks it as the exe icon.
+
+1 ICON "stuntmaster.ico"

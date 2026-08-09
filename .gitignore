@@ -1,0 +1,38 @@
+# User-supplied retail game data
+/SLUS00684 - Jackie Chan Stuntmaster/
+*.bin
+*.cue
+*.iso
+*.img
+*.chd
+
+# Local reverse-engineering workspaces and generated databases
+/.research/
+/.ghidra/
+*.gpr
+*.rep/
+
+# Build and editor output
+/build/
+/dist/
+/SCREENSHOT.BMP
+/RASTER.BMP
+/PUBLISHED.BMP
+/out/
+/work/
+/.vs/
+/.vscode/
+CMakeUserPresets.json
+__pycache__/
+*.py[cod]
+
+# Runtime output
+# Captured audio is retail game audio, so it is an extracted asset and must
+# never be committed.
+*.wav
+*.log
+*.dmp
+*.mcr
+/saves/
+/stuntmaster.ini
+/input.ini
