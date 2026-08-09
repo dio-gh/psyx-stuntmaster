@@ -25,11 +25,42 @@ namespace {
 // pipeline has delivered it). This divides `$a0` half-to-even and then models
 // the displaced `lw $v0, 0x14($sp)`, exactly as the MIPS body did: the divide
 // at the single point of use covers every writer of the field by construction.
+//
+// The running player on a dynamic obstacle is grounded again on every retimed
+// sub-step. Retail's passenger path calls `Land`, which clears its Y velocity,
+// but the following sub-stepped Move would otherwise add gravity immediately
+// and leave a -9/-18 sawtooth for the next collision correction. Keep the
+// grounded velocity and this frame's gravity delta at zero while `AS_Run` is
+// active. The shared DynamicThing hook is narrowed through `thePlayer`, so an
+// unrelated object's payload at `+0x164` cannot be mistaken for an action.
+// Platform carry remains separate in `+0x74`, and stepping off changes the
+// action to `AS_Fall`, restoring the ordinary gravity path immediately.
 std::uint32_t gravityHook(
     psx::R3000State& state,
     RetimeState& retime,
     psx::R3000Runtime& runtime,
     std::uint32_t rejoin, const void* context) noexcept {
+    constexpr std::uint32_t the_player_address = 0x800DD6B4U;
+    constexpr std::uint32_t velocity_y_offset = 0x68U;
+    constexpr std::uint32_t action_state_offset = 0x164U;
+    constexpr std::uint32_t action_run = 0x0AU;
+
+    std::uint32_t player = 0U;
+    std::uint32_t action_state = 0U;
+    const auto running = retime.divisor > 1U &&
+        runtime.read32(the_player_address, player) &&
+        player == state.gpr[17] &&
+        runtime.read32(
+            state.gpr[17] + action_state_offset, action_state) &&
+        action_state == action_run;
+    if (running) {
+        static_cast<void>(runtime.write32(
+            state.gpr[17] + velocity_y_offset, 0U));
+        hostWriteRegister(state, 4, 0U); // no grounded gravity delta
+        hostWriteRegister(state, 2, 0U); // displaced working-velocity load
+        return rejoin;
+    }
+
     const auto gravity = static_cast<std::int32_t>(state.gpr[4]);
     hostWriteRegister(
         state, 4, static_cast<std::uint32_t>(divideHalfToEven(gravity, retime.divisor)));
@@ -573,23 +604,27 @@ inline constexpr std::uint32_t humanoid_obstacle_collision = 0x8007C178U;
 // an unrefreshed contact on the next update, leaves the state, and the counted
 // collision immediately enters it again: the visible push/not-push flicker.
 //
-// Keep the coupled pass at the authored rate normally. Two contacts cannot
-// wait for the counted update:
+// Keep the coupled pass at the authored rate normally. Four contact families
+// cannot wait for the counted update:
 //
 // - an active `AS_PushObject` humanoid needs its contact bit and displacement
 //   refreshed every update;
-// - an `AS_RunJump`/`AS_Jump` humanoid needs obstacle collision on every
-//   sub-step. With a passenger ticket, this disembarks it before a sub-stepped
+// - an `AS_Run` humanoid moving across a dynamic obstacle needs its grounded
+//   contact and passenger membership refreshed every update. Otherwise one
+//   missed authored pass changes it to `AS_Fall`, and the airborne exception
+//   lands it again on the next held update: the visible run/fall vibration;
+// - an airborne jump/fall humanoid needs obstacle collision on every sub-step.
+//   With a passenger ticket, this disembarks it before a sub-stepped
 //   Platform::MovePassengers carries it once more after takeoff. Without a
-//   ticket, it prevents a descending jumper from crossing a thin dynamic
-//   obstacle entirely during a held update and being below it by the next
-//   authored collision pass.
+//   ticket, it prevents a descending `AS_Fall`/`AS_HardFall` humanoid from
+//   crossing a thin dynamic obstacle entirely during a held update and being
+//   below it by the next authored collision pass.
 // - the four ladder states consume the contact bit Ladder's collision handler
 //   publishes. The bit is cleared at the end of every update, so skipping the
 //   held collision makes the latch/climb state reinitialize itself before the
 //   next counted update and resets the climb animation forever.
 //
-// For either case run that humanoid's inner obstacle collision directly on a
+// For these cases run that humanoid's inner obstacle collision directly on a
 // held update. This is the same call the list wrapper would make, but it does
 // not also sub-step every other humanoid's passenger and ledge state.
 // Pushable::Think remains authored-rate gated separately, as before the
@@ -602,8 +637,11 @@ std::uint32_t obstacleCollisionPassHook(
     const void* context) noexcept {
     constexpr std::uint32_t active_humanoid_flag = 1U << 6U;
     constexpr std::uint32_t action_state_offset = 0x164U;
+    constexpr std::uint32_t action_run = 0x0AU;
     constexpr std::uint32_t action_run_jump = 0x06U;
     constexpr std::uint32_t action_jump = 0x08U;
+    constexpr std::uint32_t action_fall = 0x0DU;
+    constexpr std::uint32_t action_hard_fall = 0x0EU;
     constexpr std::uint32_t action_push_object = 0x13U;
     constexpr std::uint32_t action_ladder_latch_top = 0x19U;
     constexpr std::uint32_t action_climb_ladder = 0x1CU;
@@ -627,14 +665,16 @@ std::uint32_t obstacleCollisionPassHook(
                     humanoid + action_state_offset, action_state)) {
                 return rejoin;
             }
-            const auto jumping = action_state == action_run_jump ||
-                action_state == action_jump;
+            const auto airborne = action_state == action_run_jump ||
+                action_state == action_jump ||
+                action_state == action_fall ||
+                action_state == action_hard_fall;
             const auto ladder_contact =
                 action_state >= action_ladder_latch_top &&
                 action_state <= action_climb_ladder;
             if ((flags & active_humanoid_flag) != 0U &&
-                (action_state == action_push_object || jumping ||
-                 ladder_contact)) {
+                (action_state == action_push_object || airborne ||
+                 action_state == action_run || ladder_contact)) {
                 hostWriteRegister(state, 4, humanoid); // $a0, inner-call arg
                 hostWriteRegister(state, 31, rejoin);  // $ra, as the wrapper
                 return humanoid_obstacle_collision;
@@ -897,7 +937,7 @@ std::uint32_t stackSoundHook(
 // falling gravity, and hold the frame counters/animation instead.
 //
 // Every quantity is identity at a divisor of one, so an unretimed table is
-// retail. All eleven sites are in the NBOL overlay alongside `Think`, so they
+// retail. All thirteen sites are in the NBOL overlay alongside `Think`, so they
 // share its fingerprint. `Move`'s path-speed divide is the separate
 // `retimedPlatformMoveSpeed` recompute hook. `OnXorZRot` needs no hook: it
 // recomputes the collision box from the current (sub-stepped) tilt angles every
@@ -1085,6 +1125,44 @@ std::uint32_t platformMoveDelayHoldHook(
     return rejoin;
 }
 
+// `Platform::Move` copies the current Path position over the Platform each
+// update. A bobbing Platform's Y is then offset by `Bob`, but that authored
+// phase runs only on counted updates. On a held update, preserve the already
+// bobbed Y captured at `0x14($sp)` instead of copying the Path's base Y from
+// `0x24($sp)`. Also replace the saved Path Y so Move computes a zero Y delta;
+// `MovePassengers` then carries only this sub-step's real path translation.
+//
+// The site displaces `lw $a3,0x20($sp)` and its real delay slot has already
+// loaded the Path Y into `$t0`. The subsequent instructions load Z and store
+// `$a3/$t0/$t1` into Platform position, so both registers must be correct.
+std::uint32_t platformBobbingPathYHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin, const void* context) noexcept {
+    constexpr std::uint32_t bob_offset = 0x130U;
+    constexpr std::uint32_t old_y_stack_offset = 0x14U;
+    constexpr std::uint32_t path_x_stack_offset = 0x20U;
+    constexpr std::uint32_t path_y_stack_offset = 0x24U;
+
+    std::uint32_t path_x = 0U;
+    static_cast<void>(runtime.read32(
+        state.gpr[29] + path_x_stack_offset, path_x)); // $sp
+    hostWriteRegister(state, 7, path_x);               // $a3, displaced load
+
+    std::uint32_t bob = 0U;
+    if (retime.hold() &&
+        runtime.read32(state.gpr[17] + bob_offset, bob) && bob != 0U) { // $s1
+        std::uint32_t old_y = 0U;
+        if (runtime.read32(state.gpr[29] + old_y_stack_offset, old_y)) {
+            static_cast<void>(runtime.write32(
+                state.gpr[29] + path_y_stack_offset, old_y));
+            hostWriteRegister(state, 8, old_y); // $t0, delay-slot result
+        }
+    }
+    return rejoin;
+}
+
 // `Think`'s carried-velocity snapshot (`0x80021D74`, `sw t0, 0xac(s0)`, the
 // first of `0xAC/0xB0/0xB4 = 0xA0/0xA4/0xA8`). `0xA0..0xA8` is the per-update
 // path delta, already sub-stepped by `retimedPlatformMoveSpeed` so the position
@@ -1266,6 +1344,9 @@ std::span<const RetimeOverlayHook> retimeOverlayHooks() noexcept {
                      RetimeHookKind::gate, &platformMoveDelayHoldHook, nullptr);
         add_platform("platform_bob", 0x80021DA8U, 0x80021DB0U,
                      RetimeHookKind::gate, &callGateHook, &platform_bob_gate);
+        add_platform("platform_bob_path_y", 0x80022814U, 0x8002281CU,
+                     RetimeHookKind::semantic, &platformBobbingPathYHook,
+                     nullptr);
         add_platform("platform_snapshot", 0x80021D74U, 0x80021D80U,
                      RetimeHookKind::recompute, &platformSnapshotHook, nullptr);
         std::sort(

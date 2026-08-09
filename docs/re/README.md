@@ -1050,8 +1050,9 @@ decompilation. The exact hook sites: `Move` speed `retimedPlatformMoveSpeed`
 ÷k (`0x80022F48`/`0x80022FA4`), damping `0x11EB` ÷k (`0x80022FFC`);
 detached-gravity fall exact phase partitions (`0x80021BDC`/`0x80021C08`);
 frame-counter holds `0x94` (`0x80021A94`/`0x80021D38`) and `0x98`
-(`0x80021AA8`); `Bob` hold (`0x80021DA8`). `OnXorZRot` needs no hook (it
-recomputes the box from the sub-stepped tilt angles every call).
+(`0x80021AA8`); `Bob` hold (`0x80021DA8`); held bobbed-Y preservation inside
+`Move` (`0x80022814`). `OnXorZRot` needs no hook (it recomputes the box from
+the sub-stepped tilt angles every call).
 
 The finding that motivated re-doing this: the byte-trampoline reshape only
 sub-steps translation and *holds* `Teeter`, so it never fixed the teetering
@@ -1212,6 +1213,50 @@ extracted overlay/boot bytes:
   authored frame; the six clamp reads can stay full-value. `retimedPlatformMotion`
   (the current hold of `Move` at `0x80022790`) is deleted by the conversion.
 
+- **A held `Move` must preserve a bobbing Platform's Y pose (2026-08-09).**
+  `Bob` is an authored-rate timeline and remains gated at `0x80021DA8`, but
+  `Move` still runs each sub-step to advance the path. It snapshots the current
+  (already bobbed) position at stack `+0x10`, then overwrites Platform position
+  from Path position at `0x80022814..0x80022828`. On a held update that replaced
+  the bobbed Y with the path-base Y; the next counted `Bob` restored it, making
+  a standing rider in `vibrating.stsm` alternate between Y `-387` and `-412`.
+
+  The semantic hook at `0x80022814` detects a live `Platform+0x130` BobType on
+  held updates, keeps the old Y from stack `+0x14`, and replaces the saved Path
+  Y at stack `+0x24` as well. The latter makes Move's following delta calculation
+  publish zero vertical carry for that held sub-step. It still copies Path X/Z,
+  so ordinary sub-stepped translation continues. Running `Bob` wholesale on
+  every update was rejected: its mutable angle history and passenger rotation
+  side effects replayed and ejected the rider. Refreshing standing collision on
+  held updates was also rejected because it amplified the correction. The final
+  probe stays aboard and follows the slow bob, with only the normal two-unit
+  standing settle instead of the 25-unit pose alternation.
+
+- **Running across a dynamic Platform needs continuous contact without
+  grounded gravity (2026-08-09).** In `runleft.stsm`, keeping the whole obstacle
+  pass gated made the player alternate `AS_Run` (`0x0a`) and `AS_Fall`
+  (`0x0d`): the held update missed the moving surface, then the existing
+  airborne exception landed it again. `AS_Run` now uses the same narrow held
+  call to `Obstacle::HandleHumanoidObstacleCollision` as the other contact
+  states, without sub-stepping the full humanoid list.
+
+  That removed the state flip but exposed a smaller 5-6-unit correction:
+  `DynamicThing::Move` immediately reapplied divided gravity after the contact
+  path grounded the runner, leaving Y velocity to alternate between `-9` and
+  `-18`. The reference implementation in
+  `C:\dev\pub\ReChan\src\ai\platform.cpp` corroborates the intended split:
+  `MovePassengers` calls `Land` for a non-upward rider, while platform carry is
+  applied separately. The boot hook at the shared gravity-use site
+  `0x80062134` therefore recognizes only `thePlayer` in `AS_Run`, clears its
+  persistent Y velocity and this Move's gravity delta, and leaves carried
+  velocity untouched. It is disabled at divisor one and stops applying as soon
+  as the action becomes `AS_Fall`.
+
+  The deterministic replay now remains in `AS_Run`, follows the platform's
+  authored bob with `vy=0`, and reaches the edge without stored downward
+  velocity. At the edge it enters `AS_Fall` with `vy=-9`, proving the ordinary
+  gravity path resumes rather than discharging a hidden accumulated velocity.
+
 - **The whole-pass gate needs a Pushable exception (2026-08-08).**
   `Pushable::HandleHumanoidCollision` (`OL1:0x80018AF8`) both enters
   `AS_PushObject` (`0x13`) and sets humanoid context bit 2 at `+0x170`; it also
@@ -1226,7 +1271,8 @@ extracted overlay/boot bytes:
   active humanoids and makes that call, so bypassing it services the pusher
   without sub-stepping every other humanoid's passenger and ledge state.
 
-- **Jumping needs the same narrow held-update exception (2026-08-08).**
+- **Jumping and falling need the same narrow held-update exception
+  (2026-08-08, extended 2026-08-09).**
   `MoveThings__2AI` runs humanoid-obstacle collision before the per-object
   `privMoveList`; `Platform::Think` and `MovePassengers` run every retimed
   update so platform tilt/translation stay smooth. If `AS_RunJump` (`0x06`) or
@@ -1241,8 +1287,15 @@ extracted overlay/boot bytes:
   calls the same inner `Obstacle::HandleHumanoidObstacleCollision` for every
   active `AS_RunJump`/`AS_Jump` humanoid. A live ticket is cleared before
   `privMoveList`, and a ticketless descending jumper cannot tunnel through the
-  obstacle on the skipped half-step. Standing passengers remain authored-rate
-  gated.
+  obstacle on the skipped half-step.
+
+  The first version stopped there, but a normal jump changes to `AS_Fall`
+  (`0x0d`) and then `AS_HardFall` (`0x0e`) during its descent. The supplied
+  `falling.stsm` resumes in `AS_Fall`; without held collision it crossed the
+  pushable and entered `AS_Stand` on the world floor at Y `-2303`. Both fall
+  states now use the same narrow exception. The identical probe instead enters
+  `AS_Stand` on the pushable at Y `-1792`. Standing passengers remain
+  authored-rate gated.
 
 - **Detached fall uses an exact smooth partition (2026-08-08).** Retail's
   `Think` branch is forward Euler, `pos.y += velocity; velocity -= 3*gravity/2`.

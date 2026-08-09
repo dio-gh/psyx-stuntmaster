@@ -3217,9 +3217,9 @@ void retimeOverlayHooksActivatePerFingerprint() {
     using stuntmaster::game::RetimeHook;
     const auto overlays = stuntmaster::game::retimeOverlayHooks();
     // The four recompute/gate hooks, the seventeen overlay held prologues, and
-    // the twelve Platform divide-based conversion hooks (eleven divides/holds
-    // plus the carried-velocity snapshot).
-    assert(overlays.size() == 33U);
+    // the thirteen Platform divide-based conversion hooks (including the
+    // carried-velocity snapshot and bobbed-Y preservation).
+    assert(overlays.size() == 34U);
     for (std::size_t index = 1U; index < overlays.size(); ++index) {
         assert(overlays[index - 1U].hook.pc < overlays[index].hook.pc);
     }
@@ -3315,6 +3315,9 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
     constexpr std::uint32_t AS_STAND = 1U;
     constexpr std::uint32_t AS_RUN_JUMP = 0x06U;
     constexpr std::uint32_t AS_JUMP = 0x08U;
+    constexpr std::uint32_t AS_RUN = 0x0AU;
+    constexpr std::uint32_t AS_FALL = 0x0DU;
+    constexpr std::uint32_t AS_HARD_FALL = 0x0EU;
     constexpr std::uint32_t AS_PUSH_OBJECT = 0x13U;
     constexpr std::uint32_t AS_LADDER_LATCH_TOP = 0x19U;
     constexpr std::uint32_t AS_LADDER_LATCH = 0x1AU;
@@ -3381,6 +3384,7 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
 
     assert(run(false, AS_STAND, false) == 1U); // counted: full list pass
     assert(run(true, AS_STAND, true) == 0U);   // held: standing rider stays gated
+    assert(run(true, AS_RUN, true) == 2U); // moving contact cannot wait
     assert(run(true, AS_PUSH_OBJECT, false) == 2U); // refresh active pusher
     // A jump that began after the preceding counted collision still owns its
     // passenger ticket on this held update. Service the inner collision now so
@@ -3390,6 +3394,11 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
     // An already-disembarked jumper still needs the held collision pass: its
     // sub-step can cross a thin dynamic surface before the next authored tick.
     assert(run(true, AS_JUMP, false) == 2U);
+    // A normal jump changes to Fall, then HardFall, before a sufficiently low
+    // landing. Keep servicing dynamic geometry throughout that descent; the
+    // falling.stsm repro crosses its pushable during one of these held states.
+    assert(run(true, AS_FALL, false) == 2U);
+    assert(run(true, AS_HARD_FALL, false) == 2U);
     // Ladder::HandleHumanoidCollision publishes contact bit 0x170:1, which
     // each ladder state consumes on the following update. The game clears it
     // every update, so all four states need the inner pass even when held.
@@ -3397,6 +3406,88 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
     assert(run(true, AS_LADDER_LATCH, false) == 2U);
     assert(run(true, AS_LADDER_DISMOUNT, false) == 2U);
     assert(run(true, AS_CLIMB_LADDER, false) == 2U);
+}
+
+void runningDynamicPassengerDoesNotAccumulateGravity() {
+    using Runtime = stuntmaster::psx::R3000Runtime;
+    using stuntmaster::game::RetimeHook;
+    using stuntmaster::game::RetimeHooks;
+
+    const auto motion_hooks = stuntmaster::game::retimeMotionHooks();
+    const auto found = std::find_if(
+        motion_hooks.begin(), motion_hooks.end(), [](const RetimeHook& hook) {
+            return hook.pc == 0x80062134U;
+        });
+    assert(found != motion_hooks.end());
+    const std::array<RetimeHook, 1U> span{*found};
+
+    constexpr std::uint32_t site = 0x80062134U;
+    constexpr std::uint32_t stack = 0x801F0000U;
+    constexpr std::uint32_t humanoid = 0x80121000U;
+    constexpr std::uint32_t AS_RUN = 0x0AU;
+    constexpr std::uint32_t AS_FALL = 0x0DU;
+    const std::array<std::uint32_t, 6U> window{
+        0U,                                    // hooked instruction
+        0U,                                    // real delay-slot stand-in
+        encodeR(2, 4, 2, 0, 0x23),             // subu $v0,$v0,$a0
+        encodeI(0x2B, 29, 2, 0x14),            // sw   $v0,0x14($sp)
+        encodeR(31, 0, 0, 0, 0x08),            // jr   $ra
+        0U,
+    };
+
+    const auto run = [&](std::uint32_t divisor, std::uint32_t action_state,
+                         bool current_player = true) {
+        Runtime runtime;
+        RetimeHooks hooks{span};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = true;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(4, 18U);       // $a0 = gravity
+        runtime.setRegister(17, humanoid); // $s1 = DynamicThing
+        runtime.setRegister(31, Runtime::return_sentinel);
+        assert(runtime.write32(
+            0x800DD6B4U, current_player ? humanoid : humanoid + 0x1000U));
+        assert(runtime.write32(humanoid + 0x164U, action_state));
+        assert(runtime.write32(
+            humanoid + 0x68U, static_cast<std::uint32_t>(-18)));
+        assert(runtime.write32(
+            stack + 0x14U, static_cast<std::uint32_t>(-9)));
+        for (int executed = 0; executed < 32; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t velocity = 0U;
+        std::uint32_t working_velocity = 0U;
+        assert(runtime.read32(humanoid + 0x68U, velocity));
+        assert(runtime.read32(stack + 0x14U, working_velocity));
+        return std::array<std::int32_t, 3U>{
+            static_cast<std::int32_t>(velocity),
+            static_cast<std::int32_t>(working_velocity),
+            static_cast<std::int32_t>(runtime.state().gpr[4])};
+    };
+
+    // At a retimed rate, grounded running keeps both persistent velocity and
+    // this Move's gravity accumulator neutral. The platform's separate carried
+    // velocity is deliberately untouched.
+    assert((run(2U, AS_RUN) == std::array<std::int32_t, 3U>{0, 0, 0}));
+    // Airborne motion retains the normal divided gravity path.
+    assert((run(2U, AS_FALL) ==
+            std::array<std::int32_t, 3U>{-18, -18, 9}));
+    // A divisor of one remains bit-for-bit retail even if the action is Run.
+    assert((run(1U, AS_RUN) ==
+            std::array<std::int32_t, 3U>{-18, -27, 18}));
+    // The shared DynamicThing hook must not interpret another object's +0x164
+    // payload as a Player action state.
+    assert((run(2U, AS_RUN, false) ==
+            std::array<std::int32_t, 3U>{-18, -18, 9}));
 }
 
 void widescreenCullSettingTogglesAndNormalizesOldSaves() {
@@ -4218,6 +4309,50 @@ void platformConversionHooksSubStepTheRateSensitiveQuantities() {
         assert(runtime.read32(0x80120000U, ran));
         assert(ran == (held ? 0U : 1U));
     }
+
+    // Platform::Move must not overwrite an already bobbed Y with the Path's
+    // base Y during a held update. It also replaces the saved Path Y so the
+    // following retail delta calculation sees zero vertical movement. A
+    // counted update and a non-bobbing Platform retain the retail Path Y.
+    for (const auto& [held, has_bob, expected_y] :
+         std::initializer_list<std::tuple<bool, bool, std::uint32_t>>{
+             {true, true, 0xFFFFFE7DU},
+             {false, true, 0xFFFFFD9EU},
+             {true, false, 0xFFFFFD9EU}}) {
+        Runtime runtime;
+        const std::array<RetimeHook, 1U> span{hookByPc(0x80022814U)};
+        RetimeHooks hooks{span};
+        const std::array<std::uint32_t, 4U> window{0U, 0U, jr_ra, 0U};
+        assert(runtime.loadBytes(0x80022814U, std::as_bytes(std::span{window})));
+        hooks.program(2U);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        constexpr std::uint32_t stack = 0x801F0000U;
+        constexpr std::uint32_t bob = 0x80122000U;
+        runtime.reset(0x80022814U, 0U, stack);
+        runtime.setRegister(17, platform); // $s1
+        runtime.setRegister(8, 0xFFFFFD9EU); // $t0, real delay-slot Path Y
+        runtime.setRegister(31, Runtime::return_sentinel);
+        assert(runtime.write32(stack + 0x14U, 0xFFFFFE7DU)); // old bobbed Y
+        assert(runtime.write32(stack + 0x20U, 1234U));       // Path X
+        assert(runtime.write32(stack + 0x24U, 0xFFFFFD9EU)); // Path Y
+        assert(runtime.write32(platform + 0x130U, has_bob ? bob : 0U));
+        for (int executed = 0; executed < 32; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto result = runtime.step();
+            assert(result.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t saved_path_y = 0U;
+        assert(runtime.read32(stack + 0x24U, saved_path_y));
+        assert(saved_path_y == expected_y);
+        assert(runtime.state().gpr[7] == 1234U); // displaced Path X load
+        assert(runtime.state().gpr[8] == expected_y);
+    }
 }
 
 } // namespace
@@ -4272,6 +4407,7 @@ int main() {
     ledgeTraceReportsWhichConditionRejectedTheLedge();
     ledgeTraceDoesNotChangeWhatLedgeCheckDecides();
     obstacleCollisionGateServicesContactsThatCannotWait();
+    runningDynamicPassengerDoesNotAccumulateGravity();
     ladderStateHooksKeepAuthoredCadence();
     retimeOverlayHooksActivatePerFingerprint();
     platformConversionHooksSubStepTheRateSensitiveQuantities();

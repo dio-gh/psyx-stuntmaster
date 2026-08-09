@@ -330,9 +330,9 @@ private:
 // holds. They preserve the ledge-latch velocity reset and Ladder's explicit
 // climb/slide timeline. The obstacle collision/carry/ticket pass is gated to
 // the authored rate by `obstacle_collision_pass` in `retimeClockHooks()`, with
-// narrow held-update exceptions for active pushers, jumping humanoids, and
-// the four ladder states whose contact bit cannot wait. The gate replaced the
-// per-site carry band-aids
+// narrow held-update exceptions for active pushers, running humanoids on
+// dynamic obstacles, airborne jump/fall humanoids, and the four ladder states
+// whose contact bit cannot wait. The gate replaced the per-site carry band-aids
 // (`retimedPassengerHold`, `retimedObstacleDisembark`). Boot addresses, always
 // live; verified against `AI/PLAYER.c`, `AI/HUMANOID.c`, `AI/LADDER.c`,
 // `AI/PUSHABLE.c`, and `Obstacle::HandleHumanoidObstacleCollision` in
@@ -343,11 +343,11 @@ private:
 // its overlay is loaded: the recompute/gate hooks (the tutorial arrow's bob
 // counter `retimedArrowBob`, `Platform::Move`'s telescoping path-speed divide
 // `retimedPlatformMoveSpeed`, and the two `Stack` timeline/sound gates), every
-// OL1/NBOL obstacle `Think` held prologue and `Pushable`, and the eleven
+// OL1/NBOL obstacle `Think` held prologue and `Pushable`, and the thirteen
 // `Platform` divide-based conversion hooks (the `Teeter` tilt divides, the
-// detached-gravity fall's exact phase partitions, and the frame-counter/`Bob`
-// holds) that let
-// `Think` run every update instead of the old reshape trampoline. See
+// detached-gravity fall's exact phase partitions, the frame-counter/`Bob`
+// holds, the carried-velocity snapshot, and held bobbed-Y preservation) that
+// let `Think` run every update instead of the old reshape trampoline. See
 // `docs/RECOMP_MIGRATION.md`.
 [[nodiscard]] std::span<const RetimeOverlayHook> retimeOverlayHooks() noexcept;
 

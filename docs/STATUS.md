@@ -92,6 +92,7 @@ The following flags are diagnostic or experimental, not recommended defaults:
   lists, VRAM texture flipbooks, base and overriding moving-world-effect
   updates, the overlay-local tutorial arrow counter, path-driven
   `Platform::Move`, the phase-partitioned detached-platform fall, the
+  held-step preservation of a bobbing platform's already-offset Y pose, the
   per-update `Think` of every obstacle class (`Stack`
   through two narrower gates rather than a whole-`Think` hold, because its
   `Think` re-poses a display model every call), the ledge-latch velocity reset,
@@ -100,12 +101,15 @@ The following flags are diagnostic or experimental, not recommended defaults:
   does not read the master clock. It retimes animation, transition fades,
   timeouts, frame-counted state, the first-level traffic path, and the
   obstacle motion the player rides, hangs from, or mantles onto. The obstacle
-  pass normally remains authored-rate gated, but services active pushers and
-  all jumping humanoids on held updates, plus every ladder state whose
-  one-update contact bit cannot wait. Jumpers with a live passenger ticket
+  pass normally remains authored-rate gated, but services active pushers,
+  runners on dynamic obstacles, and airborne jump/fall humanoids on held
+  updates, plus every ladder state whose one-update contact bit cannot wait.
+  Jumpers with a live passenger ticket
   disembark before the platform carries them again; ticketless jumpers still
   receive the sub-step collision needed to land on thin dynamic geometry
-  instead of crossing it between authored passes. The ladder's
+  instead of crossing it between authored passes. This includes the
+  `AS_Fall`/`AS_HardFall` descent after the initial jump state; omitting those
+  states caused phase-dependent tunneling through pushables. The ladder's
   explicit upward animation advances only on authored ticks, and its direct
   downward position step is divided for smooth retail-speed descent. The jump
   exception prevents a sinking or teetering platform from carrying a player
@@ -116,6 +120,14 @@ The following flags are diagnostic or experimental, not recommended defaults:
   The car-lift `Platform` now sub-steps its teeter motion instead of moving a
   whole authored tilt at once; its jump-off feel and the new smooth/exact
   detached-fall partition still need live comparison against retail.
+  The `vibrating.stsm` buoyant-platform probe is also fixed: held updates no
+  longer replace the platform's bobbed Y with its path-base Y. The rider's
+  former `-387/-412` alternation is reduced to the expected slow bob with at
+  most a two-unit standing settle between authored collision passes.
+  The follow-up `runleft.stsm` probe no longer alternates `AS_Run`/`AS_Fall` or
+  accumulates grounded gravity while crossing the platform: Y follows the bob
+  without a correction sawtooth, vertical velocity stays zero, and walking off
+  the edge begins `AS_Fall` with the ordinary first `-9` gravity sub-step.
 - `--ledge-trace` publishes counters and the last `Obstacle::LedgeCheck`
   verdict into the patch arena and prints one line per ended ledge hang. It
   changes no guest behaviour and is independent of the guest update rate, so a
