@@ -341,8 +341,9 @@ private:
 [[nodiscard]] std::span<const RetimeHook> retimeLedgeHooks() noexcept;
 
 // The overlay-resident hooks, each carrying the fingerprint that decides whether
-// its overlay is loaded: the recompute/gate hooks (the tutorial arrow's bob
-// counter `retimedArrowBob`, `Platform::Move`'s telescoping path-speed divide
+// its overlay is loaded: the recompute/gate hooks (Butch's stomp landing-event
+// counter, the tutorial arrow's bob counter `retimedArrowBob`,
+// `Platform::Move`'s telescoping path-speed divide
 // `retimedPlatformMoveSpeed`, and the two `Stack` timeline/sound gates), every
 // OL1/NBOL obstacle `Think` held prologue and `Pushable`, and the thirteen
 // `Platform` divide-based conversion hooks (the `Teeter` tilt divides, the

@@ -1324,6 +1324,36 @@ extracted overlay/boot bytes:
   sub-stepped, while every authored boundary is exact (`position += v0`,
   `velocity = v0 - 27` for player gravity 18).
 
+- **Butch's stomp event used an unretimed private counter (2026-08-09).**
+  `boss-attack1.stsm` starts before Butch's jumping stomp. The visible
+  animation is already correct because general scene animation reads the
+  master authored-rate hold, but BOL `_Stomp__5Butch` (`0x8001AD30`) increments
+  `Butch+0x268` directly at `0x8001ADCC..0x8001ADD8` on every `Think`. When the
+  counter equals 42, the block beginning at `0x8001AE08` shakes the camera,
+  creates the stomp effect, plays both sounds, and collapses/damages a nearby
+  player. At 60 Hz that event therefore ran at half the animation's intended
+  time. Both the Ghidra reconstruction in
+  `C:\dev\vibe\openstuntmaster\re\src\AI\BOSS.c` and the typed reconstruction
+  in `C:\dev\pub\ReChan\src\ai\boss.cpp` confirm the private increment and
+  exact counter-42 event.
+
+  A semantic BOL hook at the counter store `0x8001ADD8` re-reads `+0x268`,
+  increments it only when `retimedGameClock` publishes a counted update, then
+  reproduces both the store and the delay-slot `counter < 43` result. It does
+  not hold `_Stomp`, so boss movement, collision, flags, and animation-state
+  observation still run on every high-frequency update. Its twelve-word
+  fingerprint at `0x8001ADCC` occurs once in `BOL_REL.BIN` and zero times in
+  `NBOL_REL.BIN`, `OL1_REL.BIN`, and `OL2_REL.BIN`; divisor one is the retail
+  increment.
+
+  The no-input save replay makes the damage observable as the player's
+  transition to `AS_COLLAPSE_STUN` (`0x45`). The previous build entered it at
+  update 78 and recovered at 104. The candidate enters at 119 and recovers at
+  145: the one-shot moved by exactly 41 held updates while its 26-update
+  aftermath stayed unchanged. This proves the event now consumes the same
+  authored timeline as the landing animation; visual landing sync still needs
+  the live-window confirmation.
+
 ### Obstacle ledge hangs drop at a high update rate — root cause
 
 Symptom: at 60 Hz the player latches onto a pushable or a breaking platform and

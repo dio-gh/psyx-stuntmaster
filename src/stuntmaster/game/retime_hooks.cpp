@@ -437,6 +437,12 @@ constexpr std::uint32_t overlay_prologue_limit = 0x80030000U;
 inline constexpr std::array<std::uint32_t, 8U> arrow_bob_window{
     0x8E420074U, 0x00000000U, 0x24420001U, 0xAE420074U,
     0x28420008U, 0x14400002U, 0x2402FFF9U, 0xAE420074U};
+// `Butch::_Stomp`'s landing-event counter window. This sequence occurs once
+// in BOL and not in any of the three overlays that reuse its load range.
+inline constexpr std::array<std::uint32_t, 12U> butch_stomp_window{
+    0x8C820268U, 0x00000000U, 0x24420001U, 0xAC820268U,
+    0x2842002BU, 0x10400005U, 0x27B20030U, 0x8C820058U,
+    0x00000000U, 0x34420002U, 0xAC820058U, 0x8C830268U};
 // `Think__5Stack` timeline gate window.
 inline constexpr std::array<std::uint32_t, 12U> stack_timeline_window{
     0x27BDFFE0U, 0xAFB10014U, 0x00808821U, 0x24030001U, 0xAFBF0018U,
@@ -839,7 +845,38 @@ constexpr std::array<RetimeHook, 3U> ledge_hooks{{
 }};
 
 // ---------------------------------------------------------------------------
-// Overlay recompute / gate hooks (NBOL)
+// Overlay recompute / gate hooks (BOL/NBOL)
+
+// `Butch::_Stomp` owns a private frame counter at `+0x268`. Animation 0x42 is
+// already advanced through the authored-rate scene-animation gate, but retail
+// increments this counter directly every time the state handler runs. At 60
+// Hz that made the camera shake, effect, sounds, and nearby-player damage fire
+// at update 42 while the landing pose was only halfway through.
+//
+// The site is `sw $v0,0x268($a0)` after retail has computed `old + 1`; its
+// delay slot has already produced `slti $v0,$v0,0x2b`. Re-read the old field,
+// advance it only on the counted update, and reproduce both the store and the
+// comparison result. A divisor of one is therefore retail-identical. Holding
+// only this counter leaves Butch's movement, collision, and state handler live
+// on every high-frequency update.
+std::uint32_t butchStompCounterHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin, const void*) noexcept {
+    constexpr std::uint32_t counter_offset = 0x268U;
+    constexpr std::uint32_t active_until = 0x2BU;
+    std::uint32_t counter = 0U;
+    static_cast<void>(runtime.read32(
+        state.gpr[4] + counter_offset, counter)); // $a0 = Butch
+    if (!retime.hold()) {
+        ++counter;
+    }
+    static_cast<void>(runtime.write32(
+        state.gpr[4] + counter_offset, counter));
+    hostWriteRegister(state, 2, counter < active_until ? 1U : 0U); // $v0
+    return rejoin;
+}
 
 // `Think__5Arrow`'s overlay-local bob counter (`0x8001BDAC`). The site is
 // `addiu $v0, $v0, 1`; its delay slot (`sw $v0, 0x74($s2)`) runs before the
@@ -1268,6 +1305,13 @@ std::span<const RetimeHook> retimeLedgeHooks() noexcept {
 std::span<const RetimeOverlayHook> retimeOverlayHooks() noexcept {
     static const std::vector<RetimeOverlayHook> hooks = [] {
         std::vector<RetimeOverlayHook> out{
+            {{"butch_stomp_counter",
+              0x8001ADD8U,
+              0x8001ADE0U,
+              RetimeHookKind::semantic,
+              &butchStompCounterHook},
+             0x8001ADCCU,
+             butch_stomp_window},
             {{"arrow_bob",
               0x8001BDACU,
               0x8001BDB0U,

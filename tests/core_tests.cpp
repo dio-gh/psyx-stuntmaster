@@ -3216,10 +3216,10 @@ void retimeOverlayHooksActivatePerFingerprint() {
     using Runtime = stuntmaster::psx::R3000Runtime;
     using stuntmaster::game::RetimeHook;
     const auto overlays = stuntmaster::game::retimeOverlayHooks();
-    // The four recompute/gate hooks, the seventeen overlay held prologues, and
+    // The five recompute/gate hooks, the seventeen overlay held prologues, and
     // the thirteen Platform divide-based conversion hooks (including the
     // carried-velocity snapshot and bobbed-Y preservation).
-    assert(overlays.size() == 34U);
+    assert(overlays.size() == 35U);
     for (std::size_t index = 1U; index < overlays.size(); ++index) {
         assert(overlays[index - 1U].hook.pc < overlays[index].hook.pc);
     }
@@ -3290,6 +3290,69 @@ void retimeOverlayHooksActivatePerFingerprint() {
     assert(hooks.find(0x8001BDACU) != nullptr);
     assert(hooks.find(0x800227D0U) == nullptr);
     assert(hooks.find(boot.front().pc) != nullptr);
+}
+
+void butchStompEventCounterUsesTheAuthoredClock() {
+    using Runtime = stuntmaster::psx::R3000Runtime;
+    using stuntmaster::game::RetimeHook;
+    using stuntmaster::game::RetimeHooks;
+
+    constexpr std::uint32_t site = 0x8001ADD8U;
+    const auto overlays = stuntmaster::game::retimeOverlayHooks();
+    const auto found = std::find_if(
+        overlays.begin(), overlays.end(), [](const auto& overlay) {
+            return overlay.hook.pc == site;
+        });
+    assert(found != overlays.end());
+    const std::array<RetimeHook, 1U> span{found->hook};
+
+    constexpr std::uint32_t butch = 0x80121000U;
+    constexpr std::uint32_t stack = 0x801F0000U;
+    constexpr std::uint32_t counter_offset = 0x268U;
+    const std::array<std::uint32_t, 4U> window{
+        encodeI(0x2B, 4, 2, counter_offset), // sw $v0,0x268($a0), hooked
+        encodeI(0x0A, 2, 2, 0x2B),           // slti $v0,$v0,0x2b, delay
+        encodeR(31, 0, 0, 0, 0x08),          // jr $ra at the rejoin
+        0U,
+    };
+
+    const auto run = [&](std::uint32_t divisor, bool held,
+                         std::uint32_t old_counter) {
+        Runtime runtime;
+        RetimeHooks hooks{span};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        assert(runtime.write32(butch + counter_offset, old_counter));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(2, old_counter + 1U); // retail's preceding addiu
+        runtime.setRegister(4, butch);            // $a0 = Butch
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 16; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        std::uint32_t counter = 0U;
+        assert(runtime.read32(butch + counter_offset, counter));
+        return std::array<std::uint32_t, 2U>{
+            counter, runtime.state().gpr[2]};
+    };
+
+    // A held 60 Hz update leaves both the private timeline and its comparison
+    // at the previous authored frame.
+    assert((run(2U, true, 41U) == std::array<std::uint32_t, 2U>{41U, 1U}));
+    // The counted update reaches 42, which is the one-shot landing event.
+    assert((run(2U, false, 41U) == std::array<std::uint32_t, 2U>{42U, 1U}));
+    // Frame 43 clears the active flag path exactly as retail does.
+    assert((run(2U, false, 42U) == std::array<std::uint32_t, 2U>{43U, 0U}));
+    // Divisor one remains the original one-increment-per-call behavior.
+    assert((run(1U, false, 41U) == std::array<std::uint32_t, 2U>{42U, 1U}));
 }
 
 void obstacleCollisionGateServicesContactsThatCannotWait() {
@@ -4404,6 +4467,7 @@ int main() {
     runningDynamicPassengerDoesNotAccumulateGravity();
     ladderStateHooksKeepAuthoredCadence();
     retimeOverlayHooksActivatePerFingerprint();
+    butchStompEventCounterUsesTheAuthoredClock();
     platformConversionHooksSubStepTheRateSensitiveQuantities();
     std::cout << "stuntmaster_core_tests: passed\n";
 }

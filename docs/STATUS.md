@@ -132,6 +132,14 @@ The following flags are diagnostic or experimental, not recommended defaults:
   remain: removing it left a coplanar ticketless runner unable to reboard a
   turning metro car. The probe is now spent on position, then cleared before it
   can accumulate as velocity; the early sideways departure is gone.
+- `boss-attack1.stsm` exposed a separate BOL-local authored-frame counter in
+  `Butch::_Stomp`: animation 0x42 was already gated to 30 authored ticks per
+  second, while `Butch+0x268` advanced on every 60 Hz `Think` and fired the
+  shake/effect/sounds/damage at counter 42 halfway through the jump. The
+  fingerprint-gated hook at `0x8001ADD8` now advances only that counter on the
+  master clock's counted update, leaving boss movement and collision live. The
+  deterministic damage transition moved from update 78 to 119, exactly 41
+  held updates later; live confirmation of the visual landing sync is pending.
 - `--ledge-trace` publishes counters and the last `Obstacle::LedgeCheck`
   verdict into the patch arena and prints one line per ended ledge hang. It
   changes no guest behaviour and is independent of the guest update rate, so a
