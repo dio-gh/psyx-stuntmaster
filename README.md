@@ -1,6 +1,6 @@
-# Stuntmaster PC
+# psyx-stuntmaster
 
-Stuntmaster PC is an experimental Windows-native host for the NTSC-U release
+psyx-stuntmaster is an experimental Windows-native host for the NTSC-U release
 of **Jackie Chan Stuntmaster** (`SLUS-00684`). It runs the original R3000A game
 code while replacing the console boundary with native input, OpenGL/PGXP
 presentation, OpenAL audio, FFmpeg movie playback, saves, and a small launcher.

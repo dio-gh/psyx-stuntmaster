@@ -1,3 +1,4 @@
 [submodule "external/PsyCross"]
-	path = external/PsyCross
-	url = https://github.com/OpenDriver2/PsyCross.git
+    path = external/PsyCross
+    url = https://github.com/neonoxd/PsyCross.git
+    branch = stuntmaster
