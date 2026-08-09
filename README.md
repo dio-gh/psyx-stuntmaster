@@ -24,6 +24,9 @@ Preserves the original game logic while adding modern presentation and quality-o
 > 30 Hz and original 4:3 presentation remain available as compatibility
 > fallbacks, and the complete campaign is still being validated.
 
+<img width="1589" height="896" alt="image" src="https://github.com/user-attachments/assets/abc6d404-f401-4ce0-b6fb-6cf75a6674ff" />
+
+
 ## How to Play
 
 1. Download `stuntmaster-pc-<version>-windows-x64.zip` from Releases.
