@@ -744,7 +744,7 @@ structure and awaits live confirmation.
 ### Every other obstacle `Think` takes the same hold — verified statically
 
 The same treatment generalizes to the whole obstacle set, from one table in
-`src/game/retail_patch.cpp` (`retimedObstacleThinks`,
+`src/stuntmaster/game/retail_patch.cpp` (`retimedObstacleThinks`,
 `retimedBootObstacleThinks`). Symbols come from `GAME_REL.SYM`; every window
 below was read out of the extracted image and occurs exactly once across
 `BOL`/`NBOL`/`OL1`/`OL2_REL.BIN` and the boot executable together.

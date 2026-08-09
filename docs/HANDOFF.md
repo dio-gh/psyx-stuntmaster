@@ -242,7 +242,7 @@ inside the PsyCross publication block exists.
 
 - `--guest-update-rate N` is experimental and takes any multiple of 30 through
   240. It selects a whole `GuestSchedule`
-  (`include/stuntmaster/game/guest_schedule.hpp`): swap-gate immediate,
+  (`src/stuntmaster/game/guest_schedule.hpp`): swap-gate immediate,
   emulated display rate, CPU instructions per VBlank, and guest updates per
   authored 30 Hz step. Read that header before changing anything about guest
   cadence.

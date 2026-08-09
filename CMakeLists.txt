@@ -13,26 +13,26 @@ if(MSVC)
 endif()
 
 add_library(stuntmaster_core
-    src/core/sha256.cpp
-    src/disc/cue_sheet.cpp
-    src/disc/iso9660.cpp
-    src/game/retail_hle.cpp
-    src/game/retail_patch.cpp
-    src/game/retime_hooks.cpp
-    src/game/supported_game.cpp
-    src/presentation/debug_overlay.cpp
-    src/presentation/widescreen_overlay.cpp
-    src/psx/bios_hle.cpp
-    src/psx/executable.cpp
-    src/psx/gpu_command_decoder.cpp
-    src/psx/gpu_polygon_limits.cpp
-    src/psx/gpu_command_bridge.cpp
-    src/psx/gte_runtime.cpp
-    src/psx/memory_card.cpp
-    src/psx/r3000_runtime.cpp
-    src/psx/spu.cpp
+    src/stuntmaster/core/sha256.cpp
+    src/stuntmaster/disc/cue_sheet.cpp
+    src/stuntmaster/disc/iso9660.cpp
+    src/stuntmaster/game/retail_hle.cpp
+    src/stuntmaster/game/retail_patch.cpp
+    src/stuntmaster/game/retime_hooks.cpp
+    src/stuntmaster/game/supported_game.cpp
+    src/stuntmaster/presentation/debug_overlay.cpp
+    src/stuntmaster/presentation/widescreen_overlay.cpp
+    src/stuntmaster/psx/bios_hle.cpp
+    src/stuntmaster/psx/executable.cpp
+    src/stuntmaster/psx/gpu_command_decoder.cpp
+    src/stuntmaster/psx/gpu_polygon_limits.cpp
+    src/stuntmaster/psx/gpu_command_bridge.cpp
+    src/stuntmaster/psx/gte_runtime.cpp
+    src/stuntmaster/psx/memory_card.cpp
+    src/stuntmaster/psx/r3000_runtime.cpp
+    src/stuntmaster/psx/spu.cpp
 )
-target_include_directories(stuntmaster_core PUBLIC include)
+target_include_directories(stuntmaster_core PUBLIC src)
 target_compile_features(stuntmaster_core PUBLIC cxx_std_20)
 set_target_properties(stuntmaster_core PROPERTIES
     CXX_EXTENSIONS OFF
@@ -48,12 +48,12 @@ else()
 endif()
 
 add_executable(stuntmaster
-    apps/stuntmaster/main.cpp
-    apps/stuntmaster/diagnostics.cpp
-    apps/stuntmaster/frame_io.cpp
-    apps/stuntmaster/launcher_settings.cpp
-    apps/stuntmaster/options.cpp
-    apps/stuntmaster/quick_save.cpp
+    src/stuntmaster/app/main.cpp
+    src/stuntmaster/app/diagnostics.cpp
+    src/stuntmaster/app/frame_io.cpp
+    src/stuntmaster/app/launcher_settings.cpp
+    src/stuntmaster/app/options.cpp
+    src/stuntmaster/app/quick_save.cpp
 )
 target_link_libraries(stuntmaster PRIVATE stuntmaster_core)
 target_compile_features(stuntmaster PRIVATE cxx_std_20)
@@ -77,12 +77,12 @@ if(WIN32)
         $<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/res>)
 
     add_executable(stuntmaster_launcher WIN32
-        apps/launcher/main.cpp
-        apps/stuntmaster/launcher_settings.cpp
+        src/stuntmaster/launcher/main.cpp
+        src/stuntmaster/app/launcher_settings.cpp
         res/stuntmaster.rc
     )
     target_include_directories(stuntmaster_launcher PRIVATE
-        apps/stuntmaster
+        src/stuntmaster/app
         $<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/res>)
     target_compile_features(stuntmaster_launcher PRIVATE cxx_std_20)
     target_link_libraries(stuntmaster_launcher PRIVATE shell32 ole32)
@@ -178,10 +178,10 @@ if(STUNTMASTER_ENABLE_PSYCROSS)
         target_link_libraries(psycross_static "${OPENAL_LIBRARY}")
     endif()
     target_sources(stuntmaster PRIVATE
-        src/media/str_decoder.cpp
-        src/presentation/audio_output.cpp
-        src/presentation/movie_player.cpp
-        src/presentation/psycross_presenter.cpp
+        src/stuntmaster/media/str_decoder.cpp
+        src/stuntmaster/presentation/audio_output.cpp
+        src/stuntmaster/presentation/movie_player.cpp
+        src/stuntmaster/presentation/psycross_presenter.cpp
     )
     target_include_directories(
         stuntmaster SYSTEM PRIVATE ${STUNTMASTER_FFMPEG_INCLUDE_DIR})
@@ -213,13 +213,13 @@ if(STUNTMASTER_BUILD_TESTS)
 
     add_executable(stuntmaster_quick_save_tests
         tests/quick_save_tests.cpp
-        apps/stuntmaster/launcher_settings.cpp
-        apps/stuntmaster/options.cpp
-        apps/stuntmaster/quick_save.cpp
+        src/stuntmaster/app/launcher_settings.cpp
+        src/stuntmaster/app/options.cpp
+        src/stuntmaster/app/quick_save.cpp
     )
     target_link_libraries(stuntmaster_quick_save_tests PRIVATE stuntmaster_core)
     target_include_directories(
-        stuntmaster_quick_save_tests PRIVATE apps/stuntmaster)
+        stuntmaster_quick_save_tests PRIVATE src/stuntmaster/app)
     target_compile_features(stuntmaster_quick_save_tests PRIVATE cxx_std_20)
     if(MSVC)
         target_compile_options(stuntmaster_quick_save_tests PRIVATE /UNDEBUG)

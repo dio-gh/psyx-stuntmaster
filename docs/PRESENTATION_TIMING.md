@@ -47,7 +47,7 @@ its game loop at 30 Hz by holding a queued render swap until two VBlanks have
 passed. The gate is `sltiu $v0, $v0, 2` at `0x800A015C` in `VSCallback__Fe`.
 
 `--guest-update-rate HZ` accepts any multiple of 30 up to 240 and selects a
-whole `GuestSchedule` (`include/stuntmaster/game/guest_schedule.hpp`):
+whole `GuestSchedule` (`src/stuntmaster/game/guest_schedule.hpp`):
 
 | Field | Meaning |
 | --- | --- |
