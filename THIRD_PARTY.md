@@ -15,8 +15,8 @@ Stuntmaster findings.
 
 ## PsyCross
 
-- Repository: <https://github.com/OpenDriver2/PsyCross>
-- Pinned submodule revision: `e56e4cde1c2b8a15e0d4e38b26cdd9202e0d17e6`
+- Repository: <https://github.com/neonoxd/PsyCross>
+- Pinned submodule revision: `23284b7ef885eb2cfa19da26c45e18446062a61d`
 - License: MIT
 - Path: `external/PsyCross`
 

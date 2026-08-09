@@ -418,7 +418,7 @@ Keep extractions under ignored `work/`.
 
 ```text
 SF-pc-port  d9522cda2f785f6f3cb3243a57b12b371528faab
-PsyCross    e56e4cde1c2b8a15e0d4e38b26cdd9202e0d17e6
+PsyCross    23284b7ef885eb2cfa19da26c45e18446062a61d
 ```
 
 `.research/SF-pc-port` is an ignored reference checkout.
