@@ -8,7 +8,23 @@ presentation, OpenAL audio, FFmpeg movie playback, saves, and a small launcher.
 The project does not contain the game. You need a legally obtained dump of the
 supported disc in BIN/CUE format.
 
-## Play a release
+## Features & Improvements
+
+Preserves the original game logic while adding modern presentation and quality-of-life features:
+
+- **Experimental 60 FPS mode** — gameplay can update at 60 Hz while motion, animation, timers, moving platforms, effects, and other frame-dependent systems are retimed to preserve their original speed. Retail-compatible 30 Hz remains available at any time.
+- **Improved widescreen support** — expands the 3D view to the selected aspect ratio instead of stretching the original 4:3 image. Aspect-aware culling keeps additional side geometry visible while HUD and menu elements retain their intended proportions.
+- **High-resolution PGXP rendering** — renders the original PlayStation graphics through OpenGL at resolutions up to 1440p, with PGXP-enhanced geometry and a resolution independent of the window size.
+- **Instant display switching** — toggle between 30/60 Hz and 4:3/16:9 modes while playing. Display settings can also be changed through an added in-game menu and are remembered between sessions.
+- **Remappable input** — configurable keyboard and SDL gamepad controls with conventional PlayStation-style controller mappings.
+- **Quick saves** — save or restore the complete running game with dedicated hotkeys, alongside the original memory-card save system.
+- **Portable launcher and settings** — select the game image and display options from a lightweight launcher; configuration and saves remain beside the executable for easy portability.
+
+> The 60 Hz mode and widescreen culling are experimental. Retail-compatible
+> 30 Hz and original 4:3 presentation remain available as compatibility
+> fallbacks, and the complete campaign is still being validated.
+
+## How to Play
 
 1. Download `stuntmaster-pc-<version>-windows-x64.zip` from Releases.
 2. Extract the entire archive to a writable folder.
@@ -61,11 +77,11 @@ Host controls:
 | --- | --- |
 | `Alt+Enter` | Toggle borderless fullscreen |
 | `0` | Toggle diagnostics |
-| `F5` | Replace the default quick save |
+| `F5` | Quick Save |
 | `F6` | Write a timestamped quick save |
-| `F7` | Toggle configured 30/60 Hz mode |
+| `F7` | Toggle 30Hz/60Hz mode |
 | `F8` | Toggle 4:3/widescreen mode |
-| `F9` | Load the default quick save |
+| `F9` | Quick Load |
 
 ## Current status
 
