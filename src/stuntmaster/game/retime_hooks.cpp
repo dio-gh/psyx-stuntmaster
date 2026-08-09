@@ -25,17 +25,34 @@ namespace {
 // pipeline has delivered it). This divides `$a0` half-to-even and then models
 // the displaced `lw $v0, 0x14($sp)`, exactly as the MIPS body did: the divide
 // at the single point of use covers every writer of the field by construction.
-//
-// The running player on a dynamic obstacle is grounded again on every retimed
-// sub-step. Retail's passenger path calls `Land`, which clears its Y velocity,
-// but the following sub-stepped Move would otherwise add gravity immediately
-// and leave a -9/-18 sawtooth for the next collision correction. Keep the
-// grounded velocity and this frame's gravity delta at zero while `AS_Run` is
-// active. The shared DynamicThing hook is narrowed through `thePlayer`, so an
-// unrelated object's payload at `+0x164` cannot be mistaken for an action.
-// Platform carry remains separate in `+0x74`, and stepping off changes the
-// action to `AS_Fall`, restoring the ordinary gravity path immediately.
 std::uint32_t gravityHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin, const void* context) noexcept {
+    const auto gravity = static_cast<std::int32_t>(state.gpr[4]);
+    hostWriteRegister(
+        state, 4, static_cast<std::uint32_t>(divideHalfToEven(gravity, retime.divisor)));
+    std::uint32_t working_velocity = 0U;
+    static_cast<void>(runtime.read32(state.gpr[29] + 0x14U, working_velocity));
+    hostWriteRegister(state, 2, working_velocity);
+    return rejoin;
+}
+
+// `Move__12DynamicThing`'s persistent Y-velocity store (`0x80062340`).
+//
+// A retimed running passenger still needs gravity's tiny downward position
+// probe: without it, an exactly coplanar player whose ticket was cleared cannot
+// produce an upward collision normal and reboard a moving Platform. But that
+// probe must not become persistent velocity or it accumulates into the visible
+// -9/-18 correction sawtooth. Store zero for the current player in `AS_Run`
+// after the position step has already consumed the probe. Platform carry is in
+// the separate force fields, and `AS_Fall` retains the ordinary store.
+//
+// The hook models the displaced `sw $v0,0x68($s1)`. Its delay slot has already
+// issued `lw $v0,0x6c($s1)`; do not write `$v0` here, so that pending load is
+// delivered normally after the rejoin.
+std::uint32_t runningVelocityYStoreHook(
     psx::R3000State& state,
     RetimeState& retime,
     psx::R3000Runtime& runtime,
@@ -53,20 +70,9 @@ std::uint32_t gravityHook(
         runtime.read32(
             state.gpr[17] + action_state_offset, action_state) &&
         action_state == action_run;
-    if (running) {
-        static_cast<void>(runtime.write32(
-            state.gpr[17] + velocity_y_offset, 0U));
-        hostWriteRegister(state, 4, 0U); // no grounded gravity delta
-        hostWriteRegister(state, 2, 0U); // displaced working-velocity load
-        return rejoin;
-    }
-
-    const auto gravity = static_cast<std::int32_t>(state.gpr[4]);
-    hostWriteRegister(
-        state, 4, static_cast<std::uint32_t>(divideHalfToEven(gravity, retime.divisor)));
-    std::uint32_t working_velocity = 0U;
-    static_cast<void>(runtime.read32(state.gpr[29] + 0x14U, working_velocity));
-    hostWriteRegister(state, 2, working_velocity);
+    static_cast<void>(runtime.write32(
+        state.gpr[17] + velocity_y_offset,
+        running ? 0U : state.gpr[2]));
     return rejoin;
 }
 
@@ -168,7 +174,7 @@ std::uint32_t overlapGateHook(
     return rejoin;
 }
 
-constexpr std::array<RetimeHook, 5U> motion_hooks{{
+constexpr std::array<RetimeHook, 6U> motion_hooks{{
     {"gravity_at_use",
      0x80062134U,
      0x8006213CU,
@@ -179,6 +185,11 @@ constexpr std::array<RetimeHook, 5U> motion_hooks{{
      0x800622C4U,
      RetimeHookKind::recompute,
      &positionStepHook},
+    {"running_player_velocity_y_store",
+     0x80062340U,
+     0x80062348U,
+     RetimeHookKind::semantic,
+     &runningVelocityYStoreHook},
     {"humanoid_turn_rate_negative",
      0x80064F10U,
      0x80064F18U,

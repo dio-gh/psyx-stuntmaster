@@ -1233,12 +1233,12 @@ extracted overlay/boot bytes:
   standing settle instead of the 25-unit pose alternation.
 
 - **Running across a dynamic Platform needs continuous contact without
-  grounded gravity (2026-08-09).** In `runleft.stsm`, keeping the whole obstacle
-  pass gated made the player alternate `AS_Run` (`0x0a`) and `AS_Fall`
-  (`0x0d`): the held update missed the moving surface, then the existing
-  airborne exception landed it again. `AS_Run` now uses the same narrow held
-  call to `Obstacle::HandleHumanoidObstacleCollision` as the other contact
-  states, without sub-stepping the full humanoid list.
+  accumulated grounded gravity (2026-08-09).** In `runleft.stsm`, keeping the
+  whole obstacle pass gated made the player alternate `AS_Run` (`0x0a`) and
+  `AS_Fall` (`0x0d`): the held update missed the moving surface, then the
+  existing airborne exception landed it again. `AS_Run` now uses the same
+  narrow held call to `Obstacle::HandleHumanoidObstacleCollision` as the other
+  contact states, without sub-stepping the full humanoid list.
 
   That removed the state flip but exposed a smaller 5-6-unit correction:
   `DynamicThing::Move` immediately reapplied divided gravity after the contact
@@ -1246,16 +1246,32 @@ extracted overlay/boot bytes:
   `-18`. The reference implementation in
   `C:\dev\pub\ReChan\src\ai\platform.cpp` corroborates the intended split:
   `MovePassengers` calls `Land` for a non-upward rider, while platform carry is
-  applied separately. The boot hook at the shared gravity-use site
-  `0x80062134` therefore recognizes only `thePlayer` in `AS_Run`, clears its
-  persistent Y velocity and this Move's gravity delta, and leaves carried
-  velocity untouched. It is disabled at divisor one and stops applying as soon
-  as the action becomes `AS_Fall`.
+  applied separately. The first fix recognized only `thePlayer` in `AS_Run` at
+  the shared gravity-use site `0x80062134` and cleared both persistent Y
+  velocity and that Move's gravity delta.
+
+  `metro-runforward.stsm` showed that clearing the delta was too strong. The
+  save resumes exactly on the metro roof but with no passenger ticket and with
+  the car's last delta in force `+0x70/+0x78`. With no downward displacement,
+  `CorrectThingPosition` produced no upward normal, so the collision pass could
+  not reissue the ticket. The player retained departure momentum instead of
+  being rotated/carried by the turning car and entered `AS_Fall` after 57
+  updates while still over its collision box.
+
+  Gravity now retains its divided downward *position probe*. A semantic hook at
+  the later persistent Y-velocity store `0x80062340` writes zero for only
+  `thePlayer` in retimed `AS_Run`, after the position step has consumed that
+  probe. The delay-slot Z-velocity load remains intact, carried force is
+  untouched, divisor one remains retail, and `AS_Fall` stores normal gravity.
+  The metro replay reacquires its ticket and follows the car's rotation; its
+  first later departure is at update 98, when continuous forward input actually
+  reaches the collision box's rear edge, rather than the former sideways slip.
 
   The deterministic replay now remains in `AS_Run`, follows the platform's
-  authored bob with `vy=0`, and reaches the edge without stored downward
-  velocity. At the edge it enters `AS_Fall` with `vy=-9`, proving the ordinary
-  gravity path resumes rather than discharging a hidden accumulated velocity.
+  authored bob with persistent `vy=0` and the two-unit collision probe, and
+  reaches the edge without stored downward velocity. At the edge it enters
+  `AS_Fall` with `vy=-9`, proving the ordinary gravity path resumes rather than
+  discharging a hidden accumulated velocity.
 
 - **The whole-pass gate needs a Pushable exception (2026-08-08).**
   `Pushable::HandleHumanoidCollision` (`OL1:0x80018AF8`) both enters

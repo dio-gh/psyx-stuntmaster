@@ -305,10 +305,11 @@ private:
     }
 }
 
-// The recompute hooks for `--retime-motion`: gravity, the shared position
-// step, both `FaceAngleY` turn-limit branches, and the obstacle swept-overlap
-// gate. These are the first ports from the MIPS bodies, used as the diff gate
-// for the migration. Add gate/semantic hooks as separate spans as they land.
+// The `--retime-motion` hooks: gravity, the shared position step, the grounded
+// runner's post-step Y-velocity clear, both `FaceAngleY` turn-limit branches,
+// and the obstacle swept-overlap gate. These are the first ports from the MIPS
+// bodies, used as the diff gate for the migration. Add gate/semantic hooks as
+// separate spans as they land.
 [[nodiscard]] std::span<const RetimeHook> retimeMotionHooks() noexcept;
 
 // The `--retime-clock` hooks that decide and consume the master hold decision.

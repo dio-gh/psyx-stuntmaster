@@ -3416,22 +3416,20 @@ void runningDynamicPassengerDoesNotAccumulateGravity() {
     const auto motion_hooks = stuntmaster::game::retimeMotionHooks();
     const auto found = std::find_if(
         motion_hooks.begin(), motion_hooks.end(), [](const RetimeHook& hook) {
-            return hook.pc == 0x80062134U;
+            return hook.pc == 0x80062340U;
         });
     assert(found != motion_hooks.end());
     const std::array<RetimeHook, 1U> span{*found};
 
-    constexpr std::uint32_t site = 0x80062134U;
+    constexpr std::uint32_t site = 0x80062340U;
     constexpr std::uint32_t stack = 0x801F0000U;
     constexpr std::uint32_t humanoid = 0x80121000U;
     constexpr std::uint32_t AS_RUN = 0x0AU;
     constexpr std::uint32_t AS_FALL = 0x0DU;
-    const std::array<std::uint32_t, 6U> window{
-        0U,                                    // hooked instruction
-        0U,                                    // real delay-slot stand-in
-        encodeR(2, 4, 2, 0, 0x23),             // subu $v0,$v0,$a0
-        encodeI(0x2B, 29, 2, 0x14),            // sw   $v0,0x14($sp)
-        encodeR(31, 0, 0, 0, 0x08),            // jr   $ra
+    const std::array<std::uint32_t, 4U> window{
+        0U,                                     // hooked sw $v0,0x68($s1)
+        encodeI(0x23, 17, 2, 0x6C),             // lw $v0,0x6c($s1), delay
+        encodeR(31, 0, 0, 0, 0x08),             // jr $ra at the rejoin
         0U,
     };
 
@@ -3445,7 +3443,7 @@ void runningDynamicPassengerDoesNotAccumulateGravity() {
         runtime.setRetimeHooks(&hooks);
         hooks.setActive(true);
         runtime.reset(site, 0U, stack);
-        runtime.setRegister(4, 18U);       // $a0 = gravity
+        runtime.setRegister(2, static_cast<std::uint32_t>(-9));
         runtime.setRegister(17, humanoid); // $s1 = DynamicThing
         runtime.setRegister(31, Runtime::return_sentinel);
         assert(runtime.write32(
@@ -3453,8 +3451,7 @@ void runningDynamicPassengerDoesNotAccumulateGravity() {
         assert(runtime.write32(humanoid + 0x164U, action_state));
         assert(runtime.write32(
             humanoid + 0x68U, static_cast<std::uint32_t>(-18)));
-        assert(runtime.write32(
-            stack + 0x14U, static_cast<std::uint32_t>(-9)));
+        assert(runtime.write32(humanoid + 0x6CU, 123U));
         for (int executed = 0; executed < 32; ++executed) {
             if (runtime.atReturnSentinel()) {
                 break;
@@ -3465,29 +3462,26 @@ void runningDynamicPassengerDoesNotAccumulateGravity() {
         assert(runtime.atReturnSentinel());
         runtime.settleLoadDelay();
         std::uint32_t velocity = 0U;
-        std::uint32_t working_velocity = 0U;
         assert(runtime.read32(humanoid + 0x68U, velocity));
-        assert(runtime.read32(stack + 0x14U, working_velocity));
-        return std::array<std::int32_t, 3U>{
+        return std::array<std::int32_t, 2U>{
             static_cast<std::int32_t>(velocity),
-            static_cast<std::int32_t>(working_velocity),
-            static_cast<std::int32_t>(runtime.state().gpr[4])};
+            static_cast<std::int32_t>(runtime.state().gpr[2])};
     };
 
-    // At a retimed rate, grounded running keeps both persistent velocity and
-    // this Move's gravity accumulator neutral. The platform's separate carried
-    // velocity is deliberately untouched.
-    assert((run(2U, AS_RUN) == std::array<std::int32_t, 3U>{0, 0, 0}));
-    // Airborne motion retains the normal divided gravity path.
+    // The gravity displacement has already produced a downward contact probe
+    // by this store. Grounded running discards only its persistent velocity;
+    // the delay-slot load for Z velocity must still arrive normally.
+    assert((run(2U, AS_RUN) == std::array<std::int32_t, 2U>{0, 123}));
+    // Airborne motion retains the computed Y velocity.
     assert((run(2U, AS_FALL) ==
-            std::array<std::int32_t, 3U>{-18, -18, 9}));
+            std::array<std::int32_t, 2U>{-9, 123}));
     // A divisor of one remains bit-for-bit retail even if the action is Run.
     assert((run(1U, AS_RUN) ==
-            std::array<std::int32_t, 3U>{-18, -27, 18}));
+            std::array<std::int32_t, 2U>{-9, 123}));
     // The shared DynamicThing hook must not interpret another object's +0x164
     // payload as a Player action state.
     assert((run(2U, AS_RUN, false) ==
-            std::array<std::int32_t, 3U>{-18, -18, 9}));
+            std::array<std::int32_t, 2U>{-9, 123}));
 }
 
 void widescreenCullSettingTogglesAndNormalizesOldSaves() {

@@ -126,8 +126,12 @@ The following flags are diagnostic or experimental, not recommended defaults:
   most a two-unit standing settle between authored collision passes.
   The follow-up `runleft.stsm` probe no longer alternates `AS_Run`/`AS_Fall` or
   accumulates grounded gravity while crossing the platform: Y follows the bob
-  without a correction sawtooth, vertical velocity stays zero, and walking off
-  the edge begins `AS_Fall` with the ordinary first `-9` gravity sub-step.
+  with only the two-unit contact probe, persistent vertical velocity stays
+  zero, and walking off the edge begins `AS_Fall` with the ordinary first `-9`
+  gravity sub-step. `metro-runforward.stsm` exposed why the contact probe must
+  remain: removing it left a coplanar ticketless runner unable to reboard a
+  turning metro car. The probe is now spent on position, then cleared before it
+  can accumulate as velocity; the early sideways departure is gone.
 - `--ledge-trace` publishes counters and the last `Obstacle::LedgeCheck`
   verdict into the patch arena and prints one line per ended ledge hang. It
   changes no guest behaviour and is independent of the guest update rate, so a
