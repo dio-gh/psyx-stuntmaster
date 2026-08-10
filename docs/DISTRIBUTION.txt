@@ -27,3 +27,8 @@ Default keyboard controls:
 
 Edit input.ini for the complete keyboard/gamepad bindings. See README.md for
 status, advanced controls, source, licenses, and troubleshooting context.
+
+FFmpeg is statically linked under LGPL 2.1 or later. Its license notices and
+relinking instructions are included here. The exact corresponding-source ZIP
+is published beside this binary ZIP on the GitHub Release; keep both available
+if you redistribute the executable.

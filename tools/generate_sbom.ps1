@@ -189,6 +189,15 @@ if ($BuildEnvironmentPath) {
         'build_configuration',
         'vcpkg_triplet',
         'vcpkg_builtin_baseline',
+        'ffmpeg_version',
+        'ffmpeg_source_url',
+        'ffmpeg_source_sha256',
+        'ffmpeg_signature_sha256',
+        'ffmpeg_release_key_fingerprint',
+        'ffmpeg_configuration_id',
+        'ffmpeg_linkage',
+        'ffmpeg_configure_options',
+        'nasm_version',
         'source_date_epoch',
         'reproducibility_options',
         'toolchain_digest_algorithm',
@@ -198,12 +207,20 @@ if ($BuildEnvironmentPath) {
     )
     foreach ($field in $requiredEnvironmentFields) {
         $property = $buildEnvironment.PSObject.Properties[$field]
-        if ($null -eq $property -or -not [string]$property.Value) {
+        if ($null -eq $property -or $null -eq $property.Value -or
+                ($property.Value -is [string] -and -not $property.Value) -or
+                ($property.Value -is [Array] -and $property.Value.Count -eq 0)) {
             throw "Build environment field is missing or empty: $field"
         }
     }
-    if ($buildEnvironment.schema_version -ne '2') {
+    if ($buildEnvironment.schema_version -ne '3') {
         throw "Unsupported build environment schema: $($buildEnvironment.schema_version)"
+    }
+    if ($buildEnvironment.ffmpeg_version -ne '8.1.2' -or
+            $buildEnvironment.ffmpeg_source_sha256 -ne
+                '464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c' -or
+            $buildEnvironment.ffmpeg_linkage -ne 'static') {
+        throw 'Build environment does not describe the pinned static FFmpeg build.'
     }
     if ($buildEnvironment.toolchain_digest_algorithm -ne 'SHA256') {
         throw "Unsupported toolchain digest algorithm: $($buildEnvironment.toolchain_digest_algorithm)"
@@ -302,16 +319,16 @@ $packages += New-Package `
     -Comment 'Statically linked into stuntmaster.exe.'
 $ffmpeg = New-Package `
     -Id 'SPDXRef-Package-FFmpeg-LGPL' `
-    -Name 'FFmpeg.LGPL' `
-    -Version '20260520.1.0' `
-    -DownloadLocation 'https://api.nuget.org/v3-flatcontainer/ffmpeg.lgpl/20260520.1.0/ffmpeg.lgpl.20260520.1.0.nupkg' `
-    -License 'LGPL-3.0-or-later' `
+    -Name 'FFmpeg' `
+    -Version '8.1.2' `
+    -DownloadLocation 'https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz' `
+    -License 'LGPL-2.1-or-later' `
     -FilesAnalyzed $false `
-    -Purl 'pkg:nuget/FFmpeg.LGPL@20260520.1.0' `
-    -Comment 'Dynamically linked prebuilt package; the downloaded nupkg is verified before extraction. The SBOM inventories and hashes the shipped runtime subset, not every file in the upstream nupkg.'
+    -Purl 'pkg:generic/ffmpeg@8.1.2' `
+    -Comment 'Built from the authentic signed upstream source and statically linked into stuntmaster.exe. The minimal build enables only the str demuxer plus mdec and adpcm_xa decoders; no GPL, nonfree, network, program, encoder, muxer, protocol, filter, or device component is enabled.'
 $ffmpeg.checksums = @([ordered]@{
     algorithm = 'SHA256'
-    checksumValue = '1bbeb9fe962b3cc3782541c3f02bbb491bb03b95d6c124bfaa859ce39fac83cf'
+    checksumValue = '464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c'
 })
 $packages += $ffmpeg
 
@@ -410,8 +427,7 @@ try {
             copyrightText = 'NOASSERTION'
         }
         $isFfmpeg = $normalizedName -match `
-            '(?i)(^|/)(avcodec|avformat|avutil|swresample|swscale)-[0-9]+\.dll$' -or `
-            $normalizedName -match '(?i)(^|/)licenses/FFmpeg-[^/]+\.txt$'
+            '(?i)(^|/)licenses/FFmpeg-(LGPL-[^/]+\.txt|LICENSE\.md)$'
         $origin = if ($isFfmpeg) {
             'SPDXRef-Package-FFmpeg-LGPL'
         } elseif ($normalizedName -match '(?i)(^|/)licenses/fmt\.txt$') {
@@ -461,7 +477,7 @@ $document = [ordered]@{
     documentNamespace = $DocumentNamespace
     creationInfo = [ordered]@{
         created = $sourceCreationTime
-        creators = @('Tool: stuntmaster-generate-sbom.ps1-1.3')
+        creators = @('Tool: stuntmaster-generate-sbom.ps1-1.4')
         comment = "Generated from $([IO.Path]::GetFileName($Archive)); source commit $SourceCommit."
     }
     packages = $packages
@@ -473,7 +489,7 @@ if ($null -ne $buildEnvironment) {
     $document['annotations'] = @([ordered]@{
         annotationDate = $sourceCreationTime
         annotationType = 'OTHER'
-        annotator = 'Tool: stuntmaster-generate-sbom.ps1-1.3'
+        annotator = 'Tool: stuntmaster-generate-sbom.ps1-1.4'
         comment = "Deterministic build environment metadata (JSON): $environmentJson"
     })
 }
@@ -497,7 +513,7 @@ if ($SummaryPath) {
         switch ($Id) {
             'SPDXRef-Package-Stuntmaster' { return 'Application' }
             'SPDXRef-Package-PsyCross' { return 'Statically linked source dependency' }
-            'SPDXRef-Package-FFmpeg-LGPL' { return 'Shipped dynamic runtime' }
+            'SPDXRef-Package-FFmpeg-LGPL' { return 'Statically linked source dependency' }
             { $_ -match '^SPDXRef-Package-vcpkg-(vcpkg-cmake|vcpkg-cmake-config)-' } {
                 return 'Build helper'
             }
@@ -562,6 +578,15 @@ if ($SummaryPath) {
             build_configuration = 'Build configuration'
             vcpkg_triplet = 'vcpkg triplet'
             vcpkg_builtin_baseline = 'vcpkg baseline'
+            ffmpeg_version = 'FFmpeg version'
+            ffmpeg_source_url = 'FFmpeg source'
+            ffmpeg_source_sha256 = 'FFmpeg source SHA-256'
+            ffmpeg_signature_sha256 = 'FFmpeg signature SHA-256'
+            ffmpeg_release_key_fingerprint = 'FFmpeg signing-key fingerprint'
+            ffmpeg_configuration_id = 'FFmpeg configuration digest'
+            ffmpeg_linkage = 'FFmpeg linkage'
+            ffmpeg_configure_options = 'FFmpeg configure options'
+            nasm_version = 'NASM version'
             source_date_epoch = 'SOURCE_DATE_EPOCH'
             reproducibility_options = 'Reproducibility options'
             toolchain_digest_algorithm = 'Toolchain digest algorithm'
@@ -572,7 +597,10 @@ if ($SummaryPath) {
         $summaryLines.Add('| Field | Value |')
         $summaryLines.Add('|---|---|')
         foreach ($entry in $environmentLabels.GetEnumerator()) {
-            $value = [string]$buildEnvironment.($entry.Key)
+            $rawValue = $buildEnvironment.($entry.Key)
+            $value = if ($rawValue -is [Array]) {
+                @($rawValue) -join ' '
+            } else { [string]$rawValue }
             $summaryLines.Add(('| {0} | `{1}` |' -f
                     $entry.Value, (ConvertTo-MarkdownCell $value)))
         }
@@ -647,7 +675,7 @@ if ($SummaryPath) {
     $summaryLines.Add('- `NOASSERTION` means the build did not infer a value; it does not mean that no license or copyright applies.')
     $summaryLines.Add('- The project declares MIT, while the complete analyzed distribution has `licenseConcluded: NOASSERTION` because it also contains separately licensed third-party files listed below.')
     $summaryLines.Add('- The file list describes the contents of the release ZIP. The SBOM and this report are intentionally published beside the ZIP rather than embedded in it.')
-    $summaryLines.Add('- The analyzed `stuntmaster-pc` distributable contains every shipped file. `GENERATED_FROM` relationships identify files copied from dependency packages without claiming that the complete upstream packages were analyzed.')
+    $summaryLines.Add('- The analyzed `stuntmaster-pc` distributable contains every shipped file. `GENERATED_FROM` relationships identify copied dependency license files. Statically linked library bytes are represented by package dependency relationships because they are not separable files in the ZIP.')
     $summaryLines.Add('- The build environment and tool-integrity tables record non-shipped toolchain provenance. Those tools are not represented as packages or runtime dependencies in this artifact-scoped SBOM.')
     $summaryLines.Add('- Trusted non-pull-request CI runs attest this Markdown file and the other published release files as SLSA provenance subjects. The release ZIP additionally receives an SPDX SBOM attestation whose signed predicate contains the complete structured environment record. Pull-request and local outputs are not attested by this generator itself.')
     $summaryLines.Add('- For automated analysis, validation, conversion, or policy checks, use the authoritative SPDX JSON document.')

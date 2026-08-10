@@ -108,6 +108,7 @@ Requirements:
 - Git;
 - Visual Studio 2022 with **Desktop development with C++**, **C++ CMake tools
   for Windows**, and **vcpkg** components;
+- MSYS2 installed at `C:\msys64`, with NASM (`pacman -S --needed nasm`);
 - an internet connection for the first build.
 
 Clone normally; `--recurse-submodules` is optional because the script
@@ -120,9 +121,11 @@ tools\build_windows.cmd
 ```
 
 The script discovers the installed Visual Studio edition, downloads and
-checksum-verifies a pinned prebuilt LGPL FFmpeg package, lets vcpkg provide the
+signature-verifies the authentic FFmpeg 8.1.2 source release, builds only the
+STR/MDEC/XA decoding surface as static libraries, lets vcpkg provide the
 smaller SDL2/OpenAL dependencies, builds `RelWithDebInfo`, and runs the tests.
-FFmpeg is never compiled locally. Downloads and build products stay under the
+The first FFmpeg build takes roughly two minutes on a current four-core host;
+later builds verify and reuse it. Downloads and build products stay under the
 ignored `build` directory.
 
 Other build modes:
@@ -139,9 +142,10 @@ The full build outputs `stuntmaster.exe` and `stuntmaster-launcher.exe` under
 disc-boundary work, goes under `build\windows-core\<configuration>`.
 
 You can still configure CMake directly. Set
-`STUNTMASTER_ENABLE_PSYCROSS=ON`, use the `x64-windows-static` vcpkg triplet,
-and point `STUNTMASTER_FFMPEG_ROOT` at a prebuilt package root containing
-`include`, `lib`, and `bin`. The build script is the reference configuration.
+`STUNTMASTER_ENABLE_PSYCROSS=ON`, use the
+`x64-windows-static-release` overlay triplet,
+and point `STUNTMASTER_FFMPEG_ROOT` at the source-built install root containing
+`include` and `lib`. The build script is the reference configuration.
 
 ## Create a release archive
 
@@ -159,9 +163,13 @@ and prints its SHA-256. The upload-ready artifact is:
 dist\stuntmaster-pc-0.0.1-windows-x64.zip
 ```
 
-The archive contains the launcher, game host, input defaults, required runtime
-DLLs, project notices, and third-party licenses. It intentionally contains no
-disc image, extracted retail asset, user configuration, or save file.
+The archive contains the launcher, game host, input defaults, project notices,
+and third-party licenses. FFmpeg is statically linked, so its five former DLLs
+are absent. It intentionally contains no disc image, extracted retail asset,
+user configuration, or save file. Automated Releases also publish a separate
+`stuntmaster-pc-<version>-corresponding-source.zip` with the exact application,
+PsyCross, and signed FFmpeg source needed to modify FFmpeg and relink; see
+[FFmpeg source and relinking](docs/FFMPEG_RELINKING.md).
 
 ## Development commands
 

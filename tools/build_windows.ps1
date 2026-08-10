@@ -4,7 +4,9 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string] $Configuration = 'RelWithDebInfo',
     [switch] $CoreOnly,
-    [switch] $SkipTests
+    [switch] $SkipTests,
+    [switch] $DisableFfmpegAssembly,
+    [switch] $ForceFfmpegRebuild
 )
 
 Set-StrictMode -Version Latest
@@ -74,74 +76,6 @@ function Find-VisualStudio {
     return ([string]($result | Select-Object -Last 1)).Trim()
 }
 
-function Get-PrebuiltFfmpeg {
-    $version = '20260520.1.0'
-    $expectedSha256 = `
-        '1BBEB9FE962B3CC3782541C3F02BBB491BB03B95D6C124BFAA859CE39FAC83CF'
-    $dependencyRoot = Join-Path $RepoRoot `
-        "build\dependencies\ffmpeg-lgpl-$version"
-    $nativeRoot = Join-Path $dependencyRoot 'build\native'
-    $required = @(
-        'include\libavcodec\avcodec.h',
-        'lib\avcodec.lib',
-        'bin\avcodec-62.dll',
-        'LICENSE.txt'
-    )
-    $complete = $true
-    foreach ($relative in $required) {
-        if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot $relative) `
-                -PathType Leaf)) {
-            $complete = $false
-            break
-        }
-    }
-    if ($complete) {
-        return $nativeRoot
-    }
-
-    $downloadRoot = Join-Path $RepoRoot 'build\downloads'
-    New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
-    $archive = Join-Path $downloadRoot "ffmpeg.lgpl.$version.nupkg"
-    $validArchive = $false
-    if (Test-Path -LiteralPath $archive -PathType Leaf) {
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-        $validArchive = $actual -eq $expectedSha256
-    }
-    if (-not $validArchive) {
-        if (Test-Path -LiteralPath $archive) {
-            Remove-Item -LiteralPath $archive -Force
-        }
-        $curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
-        if (-not $curl) {
-            throw 'curl.exe was not found; it is included with supported Windows versions.'
-        }
-        $url = "https://www.nuget.org/api/v2/package/FFmpeg.LGPL/$version"
-        Write-Host "Downloading prebuilt FFmpeg $version (one-time, about 150 MB)..."
-        Invoke-Native $curl '--fail' '--location' '--retry' '3' `
-            '--retry-all-errors' '--output' $archive $url
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-        if ($actual -ne $expectedSha256) {
-            Remove-Item -LiteralPath $archive -Force
-            throw "FFmpeg package checksum mismatch (received $actual)."
-        }
-    }
-
-    if (Test-Path -LiteralPath $dependencyRoot) {
-        Remove-Item -LiteralPath $dependencyRoot -Recurse -Force
-    }
-    New-Item -ItemType Directory -Force -Path $dependencyRoot | Out-Null
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::ExtractToDirectory(
-        $archive, $dependencyRoot)
-    foreach ($relative in $required) {
-        if (-not (Test-Path -LiteralPath (Join-Path $nativeRoot $relative) `
-                -PathType Leaf)) {
-            throw "The FFmpeg package is missing $relative."
-        }
-    }
-    return $nativeRoot
-}
-
 $vsRoot = Find-VisualStudio
 $cmake = Join-Path $vsRoot `
     'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
@@ -176,7 +110,22 @@ if ($CoreOnly) {
     if (-not (Test-Path -LiteralPath $toolchain -PathType Leaf)) {
         throw 'Visual Studio vcpkg was not found. Add the vcpkg package manager component to Visual Studio.'
     }
-    $ffmpegRoot = Get-PrebuiltFfmpeg
+    $ffmpegBuild = Join-Path $PSScriptRoot 'build_ffmpeg_windows.ps1'
+    $ffmpegArguments = @{
+        VisualStudioRoot = $vsRoot
+    }
+    if ($DisableFfmpegAssembly) {
+        $ffmpegArguments['DisableAssembly'] = $true
+    }
+    if ($ForceFfmpegRebuild) {
+        $ffmpegArguments['ForceRebuild'] = $true
+    }
+    & $ffmpegBuild @ffmpegArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFmpeg build failed with exit code $LASTEXITCODE."
+    }
+    $ffmpegRoot = Join-Path $RepoRoot `
+        'build\dependencies\ffmpeg-8.1.2-msvc-x64-static\install'
     $configure += @(
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
         "-DVCPKG_OVERLAY_TRIPLETS=$RepoRoot\triplets",

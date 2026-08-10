@@ -44,13 +44,32 @@ try {
             'stuntmaster-launcher.exe',
             'input.ini',
             'README-FIRST.txt',
-            'avcodec-62.dll')) {
+            'licenses/FFmpeg-LGPL-2.1-or-later.txt')) {
         if (-not ($names | Where-Object { $_ -like "*/$required" })) {
             throw "Release artifact is missing $required."
         }
     }
+    $ffmpegDlls = @($names | Where-Object {
+        $_ -match '(?i)/(avcodec|avformat|avutil|swresample|swscale)-[0-9]+\.dll$'
+    })
+    if ($ffmpegDlls.Count -ne 0) {
+        throw "Static release unexpectedly contains FFmpeg DLLs: $($ffmpegDlls -join ', ')"
+    }
 } finally {
     $zip.Dispose()
+}
+
+$artifactName = [IO.Path]::GetFileName($artifact)
+if ($artifactName -notmatch '^stuntmaster-pc-(.+)-windows-x64\.zip$') {
+    throw "Could not derive the corresponding-source name from $artifactName."
+}
+$sourceBundle = Join-Path $RepoRoot `
+    "dist\stuntmaster-pc-$($Matches[1])-corresponding-source.zip"
+& (Join-Path $PSScriptRoot 'package_source_bundle.ps1') `
+    -OutputPath $sourceBundle
+if ($LASTEXITCODE -ne 0 -or
+        -not (Test-Path -LiteralPath $sourceBundle -PathType Leaf)) {
+    throw 'Corresponding-source packaging failed.'
 }
 
 $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash

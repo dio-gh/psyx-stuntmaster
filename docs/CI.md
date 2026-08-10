@@ -22,20 +22,24 @@ read-only token, and checkout credentials are not persisted. Concurrent runs
 of the same workflow and Git ref cancel the older run. A failed build, test,
 package check, positive archive-layout inspection, or SBOM generation prevents
 publication. The archive policy permits only the installed executables,
-configuration and project documents, the five expected FFmpeg runtime DLL
-families, Markdown under `docs/`, and the four expected license files.
+configuration and project documents, Markdown under `docs/`, and the six
+expected license files. FFmpeg is statically linked; any FFmpeg runtime DLL is
+therefore unexpected.
 
 Every successful run uploads a GitHub Actions artifact named with the project
 version and source commit. It is retained for 30 days and contains the release
 ZIP, its checksum and inventory, the authoritative SPDX JSON, a generated
 Markdown SBOM report for human review, and a checksum manifest covering both
-SBOM representations.
+SBOM representations. It also contains a deterministic corresponding-source
+ZIP plus its checksum and exact file inventory. That bundle includes the exact
+application and PsyCross sources, authentic signed FFmpeg source inputs, and
+relinking instructions.
 
 After a successful branch-push or manual build, a separate Linux job downloads
-that completed artifact, rechecks the exact six-file allowlist and both checksum
+that completed artifact, rechecks the exact nine-file allowlist and all checksum
 manifests, and asks GitHub's Sigstore-backed attestation service to create two
 signed statements. The first binds the release ZIP digest to the SPDX document.
-The second records all six published files as subjects of a SLSA provenance
+The second records all nine published files as subjects of a SLSA provenance
 attestation, so the human-readable report, checksums, and inventory are covered
 as well as the ZIP and canonical SBOM. The attestation job does not check out or
 execute repository source. Its OIDC and attestation-write permissions are
@@ -85,8 +89,9 @@ gh attestation verify stuntmaster-pc-0.0.1-windows-x64.zip \
   --deny-self-hosted-runners
 ```
 
-The other five release files, including the Markdown report, can be verified
-the same way with `--predicate-type https://slsa.dev/provenance/v1`. The draft
+The other eight release files, including the Markdown report and corresponding
+source bundle, can be verified the same way with
+`--predicate-type https://slsa.dev/provenance/v1`. The draft
 release workflow performs both forms of verification automatically for all
 published files and rejects self-hosted-runner attestations. Pinning the tag's
 full commit as both the signer-workflow and source digest is essential: trusted
@@ -122,11 +127,23 @@ workflow runs, while vcpkg's own ABI keys decide whether each package can be
 reused. The project itself is always compiled and tested from the checked-out
 source.
 
+FFmpeg has a separate cache because it is built directly rather than through
+vcpkg. Its key covers the `windows-2022` image revision, Visual Studio version,
+NASM version and executable hash, and the complete pinned build script. A cold
+miss builds FFmpeg in its own visible step and immediately saves the verified
+result, even before the application build. A warm hit still verifies the
+official archive signature and every cached install file against its SHA-256
+manifest, then reuses the five static libraries. The three verified upstream
+download inputs have their own immutable hash-keyed cache and are saved as soon
+as source hashes, release-key fingerprint, and detached signature pass. The
+build cache contains only installed headers/libraries/evidence and integrity
+metadata--not FFmpeg's build objects or an extracted source tree.
+
 Cached dependency binaries are build inputs, but they are not release artifacts
 or proof of provenance by themselves. vcpkg accepts an entry only when its ABI
 key matches the current port, triplet, and toolchain configuration; the complete
-application is still linked and tested on every run. The cache does not contain
-credentials, source trees, FFmpeg, project objects, or final artifacts. GitHub
+application is still linked and tested on every run. Neither cache contains
+credentials, project objects, or final artifacts. GitHub
 scopes caches by branch/ref: trusted default-branch caches can be restored by
 later branches and pull requests, while pull-request cache writes cannot
 populate the default branch's cache. A cold default-branch run populates the
@@ -141,6 +158,13 @@ stable ZIP entry timestamps. The SBOM likewise uses the source commit time and
 a namespace derived from the source commit and archive digest. For the same
 source, dependency set, and toolchain, independent clean runs are therefore
 expected to produce the same release ZIP and SBOM SHA-256 values.
+
+FFmpeg C objects additionally use `/O2 /Brepro /MT /GL`, while NASM supplies
+its optimized x86 objects. The final application link already has CMake
+interprocedural optimization enabled, so MSVC can optimize across the former
+dynamic-library boundary. FFmpeg uses the pinned source-release timestamp as
+its own `SOURCE_DATE_EPOCH`; the corresponding-source ZIP uses the application
+commit timestamp and a stable sorted-entry writer.
 
 `windows-2022` selects a stable runner family but not an immutable Visual Studio
 or Windows SDK image. CI records the runner image, Visual Studio, CMake, and Git
@@ -158,10 +182,10 @@ workflows.
 The authoritative SPDX 2.3 JSON SBOM describes the packaged Windows
 distribution. It includes
 every file in the release ZIP with SHA-1 and SHA-256, the exact source and
-PsyCross commits, the pinned FFmpeg NuGet package and checksum, and every
-package recorded in the build's vcpkg status database. Static dependencies are
-represented as package relationships; shipped FFmpeg DLLs and license files
-are associated with the FFmpeg package. The analyzed `stuntmaster-pc`
+PsyCross commits, the authentic FFmpeg 8.1.2 source archive and checksum, and
+every package recorded in the build's vcpkg status database. Static
+dependencies are represented as package relationships; shipped FFmpeg license
+files are associated with the FFmpeg package. The analyzed `stuntmaster-pc`
 distribution contains every shipped file. Files copied from an unanalyzed
 dependency package use SPDX `GENERATED_FROM` relationships, which preserves
 their component provenance without claiming that every file in the complete
@@ -181,10 +205,12 @@ The Windows job captures stable build-environment facts after configuration:
 the GitHub runner image and image revision, architecture, Visual Studio and MSVC
 versions, MSVC toolset and tools version, Windows SDK, CMake version/generator,
 Git version, Release configuration, vcpkg triplet and baseline,
-`SOURCE_DATE_EPOCH`, and the active reproducibility options. It also records the
+`SOURCE_DATE_EPOCH`, FFmpeg source/signature/key/configuration identity, NASM
+version, linkage mode, and the active reproducibility options. It also records the
 exact SHA-256 and Authenticode result for the MSVC compiler, linker, librarian,
 MSBuild, Windows resource and manifest tools, CMake, CTest, CPack, vcpkg, Git,
-and PowerShell. The Microsoft build and SDK tools must have a valid Microsoft
+PowerShell, MSYS2 Bash, GNU Make, NASM, GnuPG/GPGV, curl, tar, and xz. The
+Microsoft build and SDK tools must have a valid Microsoft
 publisher signature. Any invalid signature fails the build; tools that are
 legitimately unsigned remain identified by their byte hash and an explicit
 `NotSigned` result.

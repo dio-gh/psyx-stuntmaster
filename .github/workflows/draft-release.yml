@@ -103,6 +103,7 @@ jobs:
             exit 1
           fi
           archive="${archives[0]}"
+          source_archive="${archive%-windows-x64.zip}-corresponding-source.zip"
           expected=(
             "$archive"
             "$archive.sha256"
@@ -110,6 +111,9 @@ jobs:
             "$archive.spdx.json"
             "$archive.sbom.md"
             "$archive.sbom.sha256"
+            "$source_archive"
+            "$source_archive.contents.txt"
+            "$source_archive.sha256"
           )
           if (( ${#files[@]} != ${#expected[@]} )); then
             echo "Expected exactly ${#expected[@]} release files, found ${#files[@]}." >&2

@@ -128,11 +128,11 @@ if(STUNTMASTER_ENABLE_PSYCROSS)
     add_subdirectory(external/PsyCross EXCLUDE_FROM_ALL)
 
     set(STUNTMASTER_FFMPEG_ROOT "" CACHE PATH
-        "Root of a prebuilt FFmpeg package containing include, lib, and bin")
+        "Root of the source-built static FFmpeg install containing include and lib")
     if(NOT STUNTMASTER_FFMPEG_ROOT)
         message(FATAL_ERROR
             "STUNTMASTER_FFMPEG_ROOT is required for the PsyCross build. "
-            "Use tools/build_windows.cmd to download the pinned prebuilt package.")
+            "Use tools/build_windows.cmd to build the pinned source release.")
     endif()
     find_path(STUNTMASTER_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
         PATHS "${STUNTMASTER_FFMPEG_ROOT}/include"
@@ -144,31 +144,29 @@ if(STUNTMASTER_ENABLE_PSYCROSS)
         string(TOUPPER "${STUNTMASTER_FFMPEG_LIBRARY}"
             STUNTMASTER_FFMPEG_LIBRARY_UPPER)
         find_library(
-            STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_IMPLIB
+            STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_LIBRARY
             NAMES "${STUNTMASTER_FFMPEG_LIBRARY}"
             PATHS "${STUNTMASTER_FFMPEG_ROOT}/lib"
             NO_DEFAULT_PATH REQUIRED)
-        file(GLOB STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_DLLS
-            LIST_DIRECTORIES FALSE
-            "${STUNTMASTER_FFMPEG_ROOT}/bin/${STUNTMASTER_FFMPEG_LIBRARY}-*.dll")
-        list(LENGTH STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_DLLS
-            STUNTMASTER_FFMPEG_DLL_COUNT)
-        if(NOT STUNTMASTER_FFMPEG_DLL_COUNT EQUAL 1)
-            message(FATAL_ERROR
-                "Expected exactly one ${STUNTMASTER_FFMPEG_LIBRARY} runtime "
-                "DLL under ${STUNTMASTER_FFMPEG_ROOT}/bin")
-        endif()
         add_library(
-            stuntmaster_ffmpeg_${STUNTMASTER_FFMPEG_LIBRARY} SHARED IMPORTED)
+            stuntmaster_ffmpeg_${STUNTMASTER_FFMPEG_LIBRARY} STATIC IMPORTED)
         set_target_properties(
             stuntmaster_ffmpeg_${STUNTMASTER_FFMPEG_LIBRARY} PROPERTIES
-            IMPORTED_IMPLIB
-                "${STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_IMPLIB}"
             IMPORTED_LOCATION
-                "${STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_DLLS}")
+                "${STUNTMASTER_${STUNTMASTER_FFMPEG_LIBRARY_UPPER}_LIBRARY}")
         list(APPEND STUNTMASTER_FFMPEG_TARGETS
             stuntmaster_ffmpeg_${STUNTMASTER_FFMPEG_LIBRARY})
     endforeach()
+    target_link_libraries(stuntmaster_ffmpeg_avformat INTERFACE
+        stuntmaster_ffmpeg_avcodec stuntmaster_ffmpeg_avutil)
+    target_link_libraries(stuntmaster_ffmpeg_avcodec INTERFACE
+        stuntmaster_ffmpeg_avutil ole32 user32)
+    target_link_libraries(stuntmaster_ffmpeg_swresample INTERFACE
+        stuntmaster_ffmpeg_avutil)
+    target_link_libraries(stuntmaster_ffmpeg_swscale INTERFACE
+        stuntmaster_ffmpeg_avutil)
+    target_link_libraries(stuntmaster_ffmpeg_avutil INTERFACE
+        user32 bcrypt)
     if(TARGET OpenAL::OpenAL)
         get_target_property(STUNTMASTER_PSYCROSS_PRIVATE_LINKS
             psycross_static LINK_LIBRARIES)
@@ -204,12 +202,6 @@ if(STUNTMASTER_ENABLE_PSYCROSS)
     target_link_libraries(stuntmaster PRIVATE ${STUNTMASTER_FFMPEG_TARGETS})
     target_compile_definitions(stuntmaster PRIVATE
         STUNTMASTER_HAS_PSYCROSS=1
-    )
-    add_custom_command(TARGET stuntmaster POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:stuntmaster>
-            $<TARGET_FILE_DIR:stuntmaster>
-        COMMAND_EXPAND_LISTS
     )
     message(STATUS "PsyCross presentation adapter enabled")
 endif()
@@ -264,12 +256,18 @@ if(WIN32)
         RENAME README-FIRST.txt)
 
     if(STUNTMASTER_ENABLE_PSYCROSS)
-        install(FILES $<TARGET_RUNTIME_DLLS:stuntmaster>
-            DESTINATION .)
         install(FILES
-            "${STUNTMASTER_FFMPEG_ROOT}/LICENSE.txt"
+            "${STUNTMASTER_FFMPEG_ROOT}/share/licenses/ffmpeg/COPYING.LGPLv2.1"
+            DESTINATION licenses
+            RENAME FFmpeg-LGPL-2.1-or-later.txt)
+        install(FILES
+            "${STUNTMASTER_FFMPEG_ROOT}/share/licenses/ffmpeg/COPYING.LGPLv3"
             DESTINATION licenses
             RENAME FFmpeg-LGPL-3.0.txt)
+        install(FILES
+            "${STUNTMASTER_FFMPEG_ROOT}/share/licenses/ffmpeg/LICENSE.md"
+            DESTINATION licenses
+            RENAME FFmpeg-LICENSE.md)
         if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
             set(STUNTMASTER_VCPKG_SHARE
                 "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")
