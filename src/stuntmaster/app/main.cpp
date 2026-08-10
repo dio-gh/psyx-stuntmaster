@@ -401,6 +401,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     append(stuntmaster::game::retimeClockHooks());
                     append(stuntmaster::game::retimeLedgeHooks());
                     append(stuntmaster::game::retimeObjectHooks());
+                    append(stuntmaster::game::retimeCounterHooks());
                 }
                 std::sort(
                     retime_boot_hooks.begin(), retime_boot_hooks.end(),

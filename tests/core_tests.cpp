@@ -3216,10 +3216,10 @@ void retimeOverlayHooksActivatePerFingerprint() {
     using Runtime = stuntmaster::psx::R3000Runtime;
     using stuntmaster::game::RetimeHook;
     const auto overlays = stuntmaster::game::retimeOverlayHooks();
-    // The five recompute/gate hooks, the seventeen overlay held prologues, and
-    // the thirteen Platform divide-based conversion hooks (including the
+    // The fifteen recompute/gate hooks, the seventeen overlay held prologues,
+    // and the thirteen Platform divide-based conversion hooks (including the
     // carried-velocity snapshot and bobbed-Y preservation).
-    assert(overlays.size() == 35U);
+    assert(overlays.size() == 45U);
     for (std::size_t index = 1U; index < overlays.size(); ++index) {
         assert(overlays[index - 1U].hook.pc < overlays[index].hook.pc);
     }
@@ -3297,7 +3297,10 @@ void butchStompEventCounterUsesTheAuthoredClock() {
     using stuntmaster::game::RetimeHook;
     using stuntmaster::game::RetimeHooks;
 
-    constexpr std::uint32_t site = 0x8001ADD8U;
+    // Migrated into the generic Shape-1 table: the site is now the addiu
+    // (0x8001ADD4) whose delay slot stores the old value; the counted path
+    // models the step and re-issues the store, the held path freezes both.
+    constexpr std::uint32_t site = 0x8001ADD4U;
     const auto overlays = stuntmaster::game::retimeOverlayHooks();
     const auto found = std::find_if(
         overlays.begin(), overlays.end(), [](const auto& overlay) {
@@ -3310,9 +3313,9 @@ void butchStompEventCounterUsesTheAuthoredClock() {
     constexpr std::uint32_t stack = 0x801F0000U;
     constexpr std::uint32_t counter_offset = 0x268U;
     const std::array<std::uint32_t, 4U> window{
-        encodeI(0x2B, 4, 2, counter_offset), // sw $v0,0x268($a0), hooked
-        encodeI(0x0A, 2, 2, 0x2B),           // slti $v0,$v0,0x2b, delay
-        encodeR(31, 0, 0, 0, 0x08),          // jr $ra at the rejoin
+        encodeI(0x09, 2, 2, 1),       // addiu $v0,$v0,1, hooked
+        encodeI(0x2B, 4, 2, 0x268),   // sw $v0,0x268($a0), delay
+        encodeR(31, 0, 0, 0, 0x08),   // jr $ra at the rejoin
         0U,
     };
 
@@ -3327,8 +3330,8 @@ void butchStompEventCounterUsesTheAuthoredClock() {
         runtime.setRetimeHooks(&hooks);
         hooks.setActive(true);
         runtime.reset(site, 0U, stack);
-        runtime.setRegister(2, old_counter + 1U); // retail's preceding addiu
-        runtime.setRegister(4, butch);            // $a0 = Butch
+        runtime.setRegister(2, old_counter); // $v0 = old counter
+        runtime.setRegister(4, butch);       // $a0 = Butch
         runtime.setRegister(31, Runtime::return_sentinel);
         for (int executed = 0; executed < 16; ++executed) {
             if (runtime.atReturnSentinel()) {
@@ -3344,15 +3347,882 @@ void butchStompEventCounterUsesTheAuthoredClock() {
             counter, runtime.state().gpr[2]};
     };
 
-    // A held 60 Hz update leaves both the private timeline and its comparison
-    // at the previous authored frame.
-    assert((run(2U, true, 41U) == std::array<std::uint32_t, 2U>{41U, 1U}));
+    // A held 60 Hz update leaves the private timeline at the previous
+    // authored frame (memory and register both).
+    assert((run(2U, true, 41U) == std::array<std::uint32_t, 2U>{41U, 41U}));
     // The counted update reaches 42, which is the one-shot landing event.
-    assert((run(2U, false, 41U) == std::array<std::uint32_t, 2U>{42U, 1U}));
-    // Frame 43 clears the active flag path exactly as retail does.
-    assert((run(2U, false, 42U) == std::array<std::uint32_t, 2U>{43U, 0U}));
+    assert((run(2U, false, 41U) == std::array<std::uint32_t, 2U>{42U, 42U}));
     // Divisor one remains the original one-increment-per-call behavior.
-    assert((run(1U, false, 41U) == std::array<std::uint32_t, 2U>{42U, 1U}));
+    assert((run(1U, false, 41U) == std::array<std::uint32_t, 2U>{42U, 42U}));
+}
+
+// The authored-rate counter holds keep private per-frame counters on the
+// master clock's cadence. Shape 1 (`addiu $vR,$vR,+-1` sites): a held update
+// leaves the counter and every later comparison on the old value, a counted
+// update is bit-identical to retail, and a divisor of one is retail
+// everywhere. Shape 2 (branch-guarded countdowns): a held update jumps to
+// the epilogue with both arms' side effects suppressed. The colour-pulse
+// call gate and the HUD animated-text overlay hold complete the family.
+// Windows use the real retail words the sites were cut from.
+void authoredCounterHooksKeepTheirCadence() {
+    using Runtime = stuntmaster::psx::R3000Runtime;
+    using stuntmaster::game::RetimeHook;
+    using stuntmaster::game::RetimeHooks;
+    using stuntmaster::game::retimeCounterHooks;
+
+    constexpr std::uint32_t jr_ra = encodeR(31, 0, 0, 0, 0x08);
+    constexpr std::uint32_t stack = 0x801F0000U;
+    constexpr std::uint32_t result = 0x80130000U;
+    const auto marker = [](std::uint32_t tag) {
+        return std::array<std::uint32_t, 5U>{
+            encodeI(0x0F, 0, 3, 0x8013), // lui   $v1, 0x8013
+            encodeI(0x09, 0, 2, tag),    // addiu $v0, $zero, tag
+            encodeI(0x2B, 3, 2, 0),      // sw    $v0, 0($v1)
+            encodeR(31, 0, 0, 0, 0x08),  // jr    $ra
+            0U,
+        };
+    };
+
+    const auto counters = retimeCounterHooks();
+    assert(counters.size() == 13U);
+    for (std::size_t index = 1U; index < counters.size(); ++index) {
+        assert(counters[index - 1U].pc < counters[index].pc);
+    }
+    const auto counterByPc = [&](std::uint32_t pc) -> RetimeHook {
+        for (const auto& hook : counters) {
+            if (hook.pc == pc) {
+                return hook;
+            }
+        }
+        assert(false);
+        return {};
+    };
+
+    // Shape 1, the dominant form: `addiu $v0,$v0,+-1` whose delay slot stores
+    // the old value and whose later code reloads the field from memory. The
+    // hook must leave register and memory untouched on a held update, model
+    // the step and repair the delayed store on a counted one.
+    const auto runCounter = [&](std::uint32_t site, std::uint32_t site_word,
+                                std::uint32_t delay, std::uint32_t object,
+                                std::uint32_t offset, std::uint32_t base_reg,
+                                std::uint32_t old_value, std::uint32_t divisor,
+                                bool held) {
+        Runtime runtime;
+        const std::array<RetimeHook, 1U> span{counterByPc(site)};
+        RetimeHooks hooks{span};
+        const std::array<std::uint32_t, 4U> window{
+            site_word, delay, jr_ra, 0U};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        assert(runtime.write32(object + offset, old_value));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(2, old_value);     // $v0 = old
+        runtime.setRegister(base_reg, object); // the counter's object
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 16; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t stored = 0U;
+        assert(runtime.read32(object + offset, stored));
+        return std::array<std::uint32_t, 2U>{
+            stored, runtime.state().gpr[2]};
+    };
+
+    constexpr std::uint32_t addiu_v0_1 = encodeI(0x09, 2, 2, 1);
+    constexpr std::uint32_t addiu_v0_m1 = encodeI(0x09, 2, 2, 0xFFFF);
+    const auto step_cases =
+        [&](std::uint32_t site, std::uint32_t site_word, std::uint32_t delay,
+            std::uint32_t object, std::uint32_t offset,
+            std::uint32_t base_reg) {
+            constexpr std::uint32_t old_value = 41U;
+            // Held: memory and $v0 both keep the old value.
+            assert((runCounter(site, site_word, delay, object, offset, base_reg,
+                               old_value, 2U, true) ==
+                    std::array<std::uint32_t, 2U>{old_value, old_value}));
+            // Counted: the step lands once, and the delayed store is repaired.
+            assert((runCounter(site, site_word, delay, object, offset, base_reg,
+                               old_value, 2U, false) ==
+                    std::array<std::uint32_t, 2U>{old_value + 1U,
+                                                  old_value + 1U}));
+            // Divisor one: retail's one-increment-per-call behavior.
+            assert((runCounter(site, site_word, delay, object, offset, base_reg,
+                               old_value, 1U, false) ==
+                    std::array<std::uint32_t, 2U>{old_value + 1U,
+                                                  old_value + 1U}));
+        };
+    // The nine delay-slot-store sites (object register, counter field).
+    step_cases(0x80032EE0U, addiu_v0_1, encodeI(0x2B, 16, 2, 0x268),
+               0x80121000U, 0x268U, 16U); // Player::_Collapse
+    step_cases(0x800331B4U, addiu_v0_1, encodeI(0x2B, 17, 2, 0x268),
+               0x80121000U, 0x268U, 17U); // Player::_HorizontalPoleSwing
+    step_cases(0x800338B8U, addiu_v0_1, encodeI(0x2B, 16, 2, 0x268),
+               0x80121000U, 0x268U, 16U); // Player::_SlopeSlide
+    step_cases(0x80068EDCU, addiu_v0_1, encodeI(0x2B, 17, 2, 0x134),
+               0x80121000U, 0x134U, 17U); // Humanoid::_Collapse
+    step_cases(0x800683D4U, addiu_v0_1, encodeI(0x2B, 4, 2, 0x134),
+               0x80121000U, 0x134U, 4U); // _BackGrabCharacterReceivePreLatch
+    step_cases(0x80075924U, addiu_v0_1, encodeI(0x2B, 17, 2, 0x40),
+               0x80121000U, 0x40U, 17U); // Behaviour::_BackoffAndTaunt
+    step_cases(0x80075B2CU, addiu_v0_1, encodeI(0x2B, 16, 2, 0x40),
+               0x80121000U, 0x40U, 16U); // Behaviour::_BackOutOfTheFight
+    step_cases(0x80074A50U, addiu_v0_1, encodeI(0x2B, 16, 2, 0x48),
+               0x80121000U, 0x48U, 16U); // Behaviour::ComplexAttack index
+    step_cases(0x80076CB8U, addiu_v0_1, encodeI(0x2B, 19, 2, 0x40),
+               0x80121000U, 0x40U, 19U); // Behaviour::NavigateEnemies
+
+    // `_Pause` decrements in the guard branch's delay slot, so the hook sits
+    // on the store instead: a held update skips the store (the countdown
+    // keeps its old value), a counted one issues it, and a divisor of one is
+    // retail's per-call store.
+    {
+        const auto runStore = [&](std::uint32_t divisor, bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{counterByPc(0x800672D8U)};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                encodeI(0x2B, 16, 2, 0x144), // sw $v0, 0x144($s0), hooked
+                0U,                          // the real delay slot is lw $ra
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(
+                0x800672D8U, std::as_bytes(std::span{window})));
+            assert(runtime.write32(0x80121000U + 0x144U, 41U)); // old value
+            hooks.program(divisor);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(0x800672D8U, 0U, stack);
+            runtime.setRegister(2, 40U);      // $v0, decremented by the guard
+            runtime.setRegister(16, 0x80121000U); // $s0 = the humanoid
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            std::uint32_t stored = 0U;
+            assert(runtime.read32(0x80121000U + 0x144U, stored));
+            return stored;
+        };
+        assert(runStore(2U, true) == 41U);  // held: the store is skipped
+        assert(runStore(2U, false) == 40U); // counted: the store lands
+        assert(runStore(1U, false) == 40U); // divisor one: retail per call
+    }
+
+    // `_GotHitFreeForm`'s delay slot is `sltu $v1,$v1,$v0`: the comparison
+    // consumed the pre-step value, so a counted update must recompute it with
+    // the new counter. Held keeps both the counter and the old comparison.
+    // The flip case (threshold == old) discriminates: held stays "not yet",
+    // counted flips once the counter passes the threshold.
+    {
+        constexpr std::uint32_t site = 0x8006C3FCU;
+        const auto run = [&](bool held, std::uint32_t old_value) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{counterByPc(site)};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                addiu_v0_1,
+                encodeR(3, 2, 3, 0, 0x2B), // sltu $v1, $v1, $v0
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            hooks.program(2U);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(2, old_value); // $v0 = old counter
+            runtime.setRegister(3, 41U);       // $v1 = free-form time global
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            return std::array<std::uint32_t, 2U>{
+                runtime.state().gpr[2], runtime.state().gpr[3]};
+        };
+        // Held: counter stays 41, `41 < 41` stays false (not yet).
+        assert((run(true, 41U) == std::array<std::uint32_t, 2U>{41U, 0U}));
+        // Counted: counter reaches 42, `41 < 42` becomes true.
+        assert((run(false, 41U) == std::array<std::uint32_t, 2U>{42U, 1U}));
+    }
+
+    // Shape 2: the guard branch's delay slot already decremented `$v0` when
+    // the hook fires. Held jumps to the epilogue with no side effects; a
+    // counted update models the guard on the pre-decrement value, so the
+    // taken and fall-through arms resume exactly as retail's branch would.
+    // Each resume target is a three-word `addiu $v0,tag; jr $ra; nop` stub,
+    // so the tag observable is `$v0` and stubs never overlap even when the
+    // targets are only two instructions apart.
+    const auto runGuard = [&](std::uint32_t site, std::uint32_t branch,
+                              std::uint32_t rejoin, std::uint32_t taken_target,
+                              std::uint32_t epilogue, std::uint32_t old_value,
+                              bool held) {
+        Runtime runtime;
+        const std::array<RetimeHook, 1U> span{counterByPc(site)};
+        RetimeHooks hooks{span};
+        const std::array<std::uint32_t, 4U> window{
+            branch,
+            addiu_v0_m1,
+            jr_ra, // the window's own rejoin stand-in (unused on held)
+            0U,
+        };
+        const auto stub = [](std::uint32_t tag) {
+            return std::array<std::uint32_t, 3U>{
+                encodeI(0x09, 0, 2, static_cast<std::uint16_t>(tag)),
+                jr_ra,
+                0U,
+            };
+        };
+        const auto fall_stub = stub(1U);
+        const auto taken_stub = stub(2U);
+        const auto end_stub = stub(3U);
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        assert(runtime.loadBytes(
+            rejoin, std::as_bytes(std::span{fall_stub})));
+        assert(runtime.loadBytes(
+            taken_target, std::as_bytes(std::span{taken_stub})));
+        assert(runtime.loadBytes(
+            epilogue, std::as_bytes(std::span{end_stub})));
+        hooks.program(2U);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(2, old_value); // $v0 = old countdown
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 16; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        return runtime.state().gpr[2]; // the resume stub's `addiu $v0, tag`
+    };
+    // The real retail guard words decode to the expected targets (the hook
+    // derives the taken arm from the encoded offset; the interpreter tests
+    // below use a wider offset where the real spacing is too tight for two
+    // five-word stubs).
+    {
+        const auto decode = [](std::uint32_t site, std::uint32_t word) {
+            const auto imm = static_cast<std::int32_t>(
+                static_cast<std::int16_t>(word & 0xFFFFU));
+            return site + 4U + static_cast<std::uint32_t>(imm << 2U);
+        };
+        assert(decode(0x8008EF1CU, 0x04400005U) == 0x8008EF34U);
+        assert(decode(0x800768B0U, 0x1C400003U) == 0x800768C0U);
+    }
+    // hdTtlive: `bltz $v0, 5` (epilogue 0x8008EF34), rejoin 0x8008EF24.
+    // Held: the epilogue runs with both guarded arms' side effects skipped.
+    assert(runGuard(0x8008EF1CU, 0x04400005U, 0x8008EF24U, 0x8008EF34U,
+                    0x8008EF34U, 1U, true) == 3U);
+    // Counted with a positive countdown: the guard falls through to the
+    // decremented-value branch, exactly as retail's `bnez` would.
+    assert(runGuard(0x8008EF1CU, 0x04400005U, 0x8008EF24U, 0x8008EF34U,
+                    0x8008EF34U, 1U, false) == 1U);
+    // Counted with a negative countdown: retail's `bltz` jumps to the
+    // epilogue (the "already expired" skip).
+    assert(runGuard(0x8008EF1CU, 0x04400005U, 0x8008EF24U, 0x8008EF34U,
+                    0x8008EF34U, static_cast<std::uint32_t>(-1), false) == 3U);
+    // NavigateWorld: `bgtz $v0, 3`; the taken arm is pushed to 0x80076974
+    // (imm 0x30) so the stubs do not collide; the real imm-3 decode is
+    // asserted above.
+    assert(runGuard(0x800768B0U, 0x1C400030U, 0x800768B8U, 0x80076974U,
+                    0x80076C6CU, 5U, true) == 3U);
+    assert(runGuard(0x800768B0U, 0x1C400030U, 0x800768B8U, 0x80076974U,
+                    0x80076C6CU, 5U, false) == 2U);
+    assert(runGuard(0x800768B0U, 0x1C400030U, 0x800768B8U, 0x80076974U,
+                    0x80076C6CU, 0U, false) == 1U);
+
+    // The pause-menu colour pulse gates `jal CalcNextColor` (the only step of
+    // the chase accumulator): held skips the call, counted runs it.
+    {
+        constexpr std::uint32_t site = 0x8005CD1CU;
+        constexpr std::uint32_t callee = 0x8005CC44U;
+        const auto clock_hooks = stuntmaster::game::retimeClockHooks();
+        const auto found = std::find_if(
+            clock_hooks.begin(), clock_hooks.end(),
+            [](const RetimeHook& hook) { return hook.pc == site; });
+        assert(found != clock_hooks.end());
+        const auto run = [&](bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{*found};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                (0x03U << 26U) | ((callee >> 2U) & 0x03FFFFFFU), // jal
+                encodeR(0, 16, 4, 0, 0x21), // move $s0, $a0
+                encodeR(8, 0, 0, 0, 0x08),  // jr $t0 (the gate re-writes $ra)
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            const auto calc_marker = marker(1U);
+            assert(runtime.loadBytes(
+                callee, std::as_bytes(std::span{calc_marker})));
+            assert(runtime.write32(result, 0U));
+            hooks.program(2U);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(8, Runtime::return_sentinel); // $t0
+            runtime.setRegister(16, 0xABCD0000U); // $s0, delay slot arg
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            std::uint32_t tag = 0U;
+            assert(runtime.read32(result, tag));
+            return std::array<std::uint32_t, 2U>{
+                tag, runtime.state().gpr[16]};
+        };
+        assert((run(true) == std::array<std::uint32_t, 2U>{0U, 0xABCD0000U}));
+        assert((run(false) == std::array<std::uint32_t, 2U>{1U, 0xABCD0000U}));
+    }
+
+    // `CBVEffect::Update` is the third WEffect-family Update override; the
+    // vtable dispatches CBV effects to it directly, so the held prologues at
+    // `WEffect::Update`/`FWEffect::Update` do not cover its colour/UV
+    // animation. The `jal Update__11CBVPrimData` is gated: held skips the
+    // animation step, counted runs it.
+    {
+        constexpr std::uint32_t site = 0x8008CFACU;
+        constexpr std::uint32_t callee = 0x80098BE0U;
+        const auto clock_hooks = stuntmaster::game::retimeClockHooks();
+        const auto found = std::find_if(
+            clock_hooks.begin(), clock_hooks.end(),
+            [](const RetimeHook& hook) { return hook.pc == site; });
+        assert(found != clock_hooks.end());
+        const auto run = [&](bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{*found};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                (0x03U << 26U) | ((callee >> 2U) & 0x03FFFFFFU), // jal
+                0U,                                               // nop
+                encodeR(8, 0, 0, 0, 0x08), // jr $t0 (the gate re-writes $ra)
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            const auto anim_marker = marker(1U);
+            assert(runtime.loadBytes(
+                callee, std::as_bytes(std::span{anim_marker})));
+            assert(runtime.write32(result, 0U));
+            hooks.program(2U);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(8, Runtime::return_sentinel); // $t0
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            std::uint32_t tag = 0U;
+            assert(runtime.read32(result, tag));
+            return tag;
+        };
+        assert(run(true) == 0U);  // held: the UV step is skipped
+        assert(run(false) == 1U); // counted: the UV step runs
+    }
+
+    // The pause-menu decider: `MenuDraw`'s prologue publishes the master
+    // decision once per guest update, because `Step__4Time` does not run
+    // while a menu state is up and the pause menu's own authored-rate
+    // animation (the selected-item colour chase) would otherwise read a stale
+    // decision from the last play update — frozen or twice as fast depending
+    // on the stale phase. The hook models the displaced `move $s0, $a0` on
+    // every call.
+    {
+        constexpr std::uint32_t site = 0x80029DC0U;
+        const auto clock_hooks = stuntmaster::game::retimeClockHooks();
+        const auto found = std::find_if(
+            clock_hooks.begin(), clock_hooks.end(),
+            [](const RetimeHook& hook) { return hook.pc == site; });
+        assert(found != clock_hooks.end());
+        const auto run = [&](std::uint32_t divisor, std::uint32_t seed_accum) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{*found};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                encodeR(0, 16, 4, 0, 0x21), // move $s0, $a0 (hooked)
+                encodeI(0x2B, 29, 31, 0x18), // sw $ra, 0x18($sp)
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            hooks.program(divisor);
+            hooks.state().clock_accum = seed_accum;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(4, 0xABCD0000U); // $a0 = the menu manager
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            return std::array<std::uint32_t, 3U>{
+                runtime.state().gpr[16],            // $s0, displaced move
+                hooks.state().clock_accum,
+                hooks.state().advance_this_step_ ? 1U : 0U};
+        };
+        // Divisor two: the menu alternates counted/held like play does.
+        assert((run(2U, 0U) == std::array<std::uint32_t, 3U>{0xABCD0000U, 1U, 0U}));
+        assert((run(2U, 1U) == std::array<std::uint32_t, 3U>{0xABCD0000U, 2U, 1U}));
+        // Divisor one: every retail-cadence menu update counts.
+        assert((run(1U, 5U) == std::array<std::uint32_t, 3U>{0xABCD0000U, 6U, 1U}));
+    }
+
+    // The HUD animated-text overlay is a whole-`Update` hold (its `+0x38`
+    // pause clamp makes a counter-level hold unsafe): a held update returns
+    // through the prologue with `$s0` restored; a counted one models the
+    // displaced `move $s0, $a0`.
+    {
+        constexpr std::uint32_t site = 0x8008F66CU;
+        const auto objects = stuntmaster::game::retimeObjectHooks();
+        const auto found = std::find_if(
+            objects.begin(), objects.end(),
+            [](const RetimeHook& hook) { return hook.pc == site; });
+        assert(found != objects.end());
+        const auto run = [&](bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{*found};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                encodeR(0, 16, 4, 0, 0x21), // move $s0, $a0 (hooked)
+                encodeI(0x2B, 29, 31, 0x14), // sw $ra, 0x14($sp)
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            assert(runtime.write32(stack + 0x10U, 0x12345678U)); // saved $s0
+            hooks.program(2U);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(4, 0xABCD0000U); // $a0 = the overlay
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            return runtime.state().gpr[16];
+        };
+        assert(run(true) == 0x12345678U);  // restored, frame unwound
+        assert(run(false) == 0xABCD0000U); // displaced move modeled
+    }
+
+    // The end-of-level tally count-up (`DoScoreTally` adds 0x1C3 per call)
+    // runs under the Director-driven play state, a steady handler, so the
+    // whole `Update__7hdTally` is a held prologue: held freezes the tally,
+    // counted advances it.
+    {
+        constexpr std::uint32_t site = 0x80090AC8U;
+        const auto objects = stuntmaster::game::retimeObjectHooks();
+        const auto found = std::find_if(
+            objects.begin(), objects.end(),
+            [](const RetimeHook& hook) { return hook.pc == site; });
+        assert(found != objects.end());
+        const auto run = [&](bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{*found};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                encodeR(0, 18, 4, 0, 0x21), // move $s2, $a0 (hooked)
+                encodeI(0x2B, 29, 31, 0x20), // sw $ra, 0x20($sp)
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            assert(runtime.write32(stack + 0x18U, 0x12345678U)); // saved $s2
+            hooks.program(2U);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(4, 0xABCD0000U); // $a0 = the tally
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            return runtime.state().gpr[18];
+        };
+        assert(run(true) == 0x12345678U);  // restored, frame unwound
+        assert(run(false) == 0xABCD0000U); // displaced move modeled
+    }
+
+    // --- BOL tier: boss/behaviour counters in BOL_REL.BIN ---
+    constexpr std::array<std::uint32_t, 1U> jr_ra_arr{jr_ra};
+    const auto overlayByPc = [](std::uint32_t pc) -> RetimeHook {
+        for (const auto& overlay : stuntmaster::game::retimeOverlayHooks()) {
+            if (overlay.hook.pc == pc) {
+                return overlay.hook;
+            }
+        }
+        assert(false);
+        return {};
+    };
+    // Standard Shape-1 sites: held freezes, counted steps once, divisor one
+    // is retail.
+    const auto runBolStep = [&](std::uint32_t site, std::uint32_t site_word,
+                                std::uint32_t delay, std::uint32_t base_reg,
+                                std::uint32_t field, std::uint32_t old_value,
+                                std::uint32_t divisor, bool held) {
+        Runtime runtime;
+        const std::array<RetimeHook, 1U> span{overlayByPc(site)};
+        RetimeHooks hooks{span};
+        const std::array<std::uint32_t, 4U> window{
+            site_word, delay, jr_ra, 0U};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        assert(runtime.write32(0x80121000U + field, old_value));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(2, old_value);
+        runtime.setRegister(base_reg, 0x80121000U);
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 16; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t stored = 0U;
+        assert(runtime.read32(0x80121000U + field, stored));
+        return std::array<std::uint32_t, 2U>{
+            stored, runtime.state().gpr[2]};
+    };
+    const auto bolStepCases =
+        [&](std::uint32_t site, std::uint32_t site_word, std::uint32_t delay,
+            std::uint32_t base_reg, std::uint32_t field, int delta) {
+            // held: frozen; counted at divisor two: one step; divisor one:
+            // retail per call.
+            assert((runBolStep(site, site_word, delay, base_reg, field, 41U,
+                               2U, true) ==
+                    std::array<std::uint32_t, 2U>{41U, 41U}));
+            const auto expected = static_cast<std::uint32_t>(
+                static_cast<std::int32_t>(41) + delta);
+            assert((runBolStep(site, site_word, delay, base_reg, field, 41U,
+                               2U, false) ==
+                    std::array<std::uint32_t, 2U>{expected, expected}));
+            assert((runBolStep(site, site_word, delay, base_reg, field, 41U,
+                               1U, false) ==
+                    std::array<std::uint32_t, 2U>{expected, expected}));
+        };
+    // Boss get-up (+0x134), Butch decision (+0x40), Butch charge (+0x40),
+    // Paul recovery (+0x68 countdown).
+    bolStepCases(0x8001A9B8U, 0x24420001U, 0xAE020134U, 16U, 0x134U, +1);
+    bolStepCases(0x8001CD3CU, 0x24420001U, 0xAE020040U, 16U, 0x40U, +1);
+    bolStepCases(0x8001D20CU, 0x24420001U, 0xAE020040U, 16U, 0x40U, +1);
+    bolStepCases(0x8001D948U, 0x2442FFFFU, 0xAEC20068U, 22U, 0x68U, -1);
+
+    // Two-deep sites: the addiu's delay slot is a branch and the store sits
+    // in the branch's own delay slot. The hook decodes the branch target and
+    // performs the store itself; the test stands a `jr $ra` on the resume
+    // path. Held resumes at the branch's decision on the old value.
+    const auto runBolTwoDeep = [&](std::uint32_t site, std::uint32_t site_word,
+                                   std::uint32_t branch, std::uint32_t store,
+                                   std::uint32_t base_reg,
+                                   std::uint32_t field,
+                                   std::uint32_t resume_held_taken,
+                                   std::uint32_t resume_held_fall,
+                                   std::uint32_t old_value,
+                                   std::uint32_t divisor, bool held) {
+        Runtime runtime;
+        const std::array<RetimeHook, 1U> span{overlayByPc(site)};
+        RetimeHooks hooks{span};
+        const std::array<std::uint32_t, 5U> window{
+            site_word, branch, store, jr_ra, 0U};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        assert(runtime.loadBytes(
+            resume_held_taken, std::as_bytes(std::span{jr_ra_arr})));
+        assert(runtime.loadBytes(
+            resume_held_fall, std::as_bytes(std::span{jr_ra_arr})));
+        assert(runtime.write32(0x80121000U + field, old_value));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(2, old_value);
+        runtime.setRegister(base_reg, 0x80121000U);
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 16; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t stored = 0U;
+        assert(runtime.read32(0x80121000U + field, stored));
+        return std::array<std::uint32_t, 2U>{
+            stored, runtime.state().gpr[2]};
+    };
+    // `_MissileAttack`'s `addiu; j 0x8001bebc; sw` loop-tail counter (+0x268).
+    assert((runBolTwoDeep(0x8001C294U, 0x24420001U, 0x08006FAFU,
+                          0xAE620268U, 19U, 0x268U, 0x8001BEBCU,
+                          0x8001BEBCU, 41U, 2U, true) ==
+            std::array<std::uint32_t, 2U>{41U, 41U}));
+    assert((runBolTwoDeep(0x8001C294U, 0x24420001U, 0x08006FAFU,
+                          0xAE620268U, 19U, 0x268U, 0x8001BEBCU,
+                          0x8001BEBCU, 41U, 2U, false) ==
+            std::array<std::uint32_t, 2U>{42U, 42U}));
+    // `CounterAttack`'s `addiu; j 0x8001ee90; sw` per-attack frames (+0x94).
+    assert((runBolTwoDeep(0x8001EE38U, 0x24420001U, 0x08007BA4U,
+                          0xAC620094U, 3U, 0x94U, 0x8001EE90U,
+                          0x8001EE90U, 41U, 2U, true) ==
+            std::array<std::uint32_t, 2U>{41U, 41U}));
+    assert((runBolTwoDeep(0x8001EE38U, 0x24420001U, 0x08007BA4U,
+                          0xAC620094U, 3U, 0x94U, 0x8001EE90U,
+                          0x8001EE90U, 41U, 2U, false) ==
+            std::array<std::uint32_t, 2U>{42U, 42U}));
+    // `_PaulDMS`'s `addiu; blez; sw` spotlight-attack countdown (+0x64):
+    // counted with old 2 keeps it alive (blez not taken), counted with old 1
+    // lets it expire (blez taken), held defers the expiry.
+    assert((runBolTwoDeep(0x8001DAD0U, 0x2442FFFFU, 0x1840000FU,
+                          0xAEC20064U, 22U, 0x64U, 0x8001DB14U,
+                          0x8001DADCU, 2U, 2U, false) ==
+            std::array<std::uint32_t, 2U>{1U, 1U}));
+    assert((runBolTwoDeep(0x8001DAD0U, 0x2442FFFFU, 0x1840000FU,
+                          0xAEC20064U, 22U, 0x64U, 0x8001DB14U,
+                          0x8001DADCU, 1U, 2U, false) ==
+            std::array<std::uint32_t, 2U>{0U, 0U}));
+    assert((runBolTwoDeep(0x8001DAD0U, 0x2442FFFFU, 0x1840000FU,
+                          0xAEC20064U, 22U, 0x64U, 0x8001DB14U,
+                          0x8001DADCU, 1U, 2U, true) ==
+            std::array<std::uint32_t, 2U>{1U, 1U}));
+
+    // `_TargetMissileAttack`'s retarget delay (+0x298): the store sits in an
+    // unconditional `j`'s delay slot, so a held update undoes it. The
+    // machinery runs the store (memory 42) before the hook; counted leaves it,
+    // held restores `$v0 - 1`.
+    {
+        constexpr std::uint32_t site = 0x8001C3D8U;
+        constexpr std::uint32_t rejoin = 0x8001C6E8U;
+        constexpr std::uint32_t dante = 0x80121000U;
+        const auto run = [&](bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{overlayByPc(site)};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                0x080071BAU, // j 0x8001c6e8, hooked
+                0xAE820298U, // sw $v0, 0x298($s4), delay slot
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            assert(runtime.loadBytes(
+                rejoin, std::as_bytes(std::span{jr_ra_arr})));
+            assert(runtime.write32(dante + 0x298U, 99U));
+            hooks.program(2U);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(2, 42U); // $v0 = new (increment already ran)
+            runtime.setRegister(20, dante); // $s4
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            std::uint32_t stored = 0U;
+            assert(runtime.read32(dante + 0x298U, stored));
+            return stored;
+        };
+        assert(run(false) == 42U); // counted: the delay-slot store stands
+        assert(run(true) == 41U);  // held: the store is undone
+    }
+
+    // The henchman engage delay (global gp+0xCC8): a store-site hold whose
+    // `j` delay slot carries execution to its target.
+    {
+        constexpr std::uint32_t site = 0x8001EA94U;
+        constexpr std::uint32_t resume = 0x8001ED98U;
+        constexpr std::uint32_t gp = 0x800DC94CU;
+        constexpr std::uint32_t global = gp + 0xCC8U;
+        const auto run = [&](std::uint32_t divisor, bool held) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{overlayByPc(site)};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                0xAF820CC8U, // sw $v0, 0xcc8($gp), hooked
+                0x08007B66U, // j 0x8001ed98, delay slot
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            assert(runtime.loadBytes(
+                resume, std::as_bytes(std::span{jr_ra_arr})));
+            assert(runtime.write32(global, 41U));
+            hooks.program(divisor);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, gp, stack);
+            runtime.setRegister(2, 42U); // $v0 = new (addiu already ran)
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            std::uint32_t stored = 0U;
+            assert(runtime.read32(global, stored));
+            return stored;
+        };
+        assert(run(2U, true) == 41U);  // held: the store is skipped
+        assert(run(2U, false) == 42U); // counted: the store lands
+        assert(run(1U, false) == 42U); // divisor one: retail per call
+    }
+
+    // The pushable push gate: `Pushable::HandleHumanoidCollision` runs on
+    // every guest update for an active pusher, so the displacement and the
+    // engage counter must hold on held updates. Counted models the engage
+    // branch (`$v1` = old counter < 5); held undoes the delay-slot counter
+    // store, re-issues the contact bit, and skips the displacement.
+    {
+        constexpr std::uint32_t site = 0x80018EFCU;
+        constexpr std::uint32_t rejoin = 0x80018F04U;      // displacement
+        constexpr std::uint32_t skip = 0x80019178U;        // +0x9C latch
+        constexpr std::uint32_t pushable = 0x80121000U;
+        const auto run = [&](std::uint32_t divisor, bool held,
+                             std::uint32_t v1, std::uint32_t old_counter) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{overlayByPc(site)};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                0x1460009EU, // bnez $v1, 0x80019178, hooked
+                0xAE2200A4U, // sw $v0, 0xa4($s1), delay slot
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            assert(runtime.loadBytes(
+                rejoin, std::as_bytes(std::span{jr_ra_arr})));
+            assert(runtime.loadBytes(
+                skip, std::as_bytes(std::span{jr_ra_arr})));
+            assert(runtime.write32(pushable + 0xA4U, old_counter));
+            assert(runtime.write32(pushable + 0x170U, 0U));
+            hooks.program(divisor);
+            hooks.state().advance_this_step_ = !held;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(3, v1);             // $v1 = (old < 5)
+            runtime.setRegister(2, old_counter + 1U); // $v0 = old + 1
+            runtime.setRegister(17, pushable);      // $s1
+            runtime.setRegister(18, 0x80122000U);   // $s2 = humanoid
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            std::uint32_t counter = 0U;
+            std::uint32_t contact = 0U;
+            assert(runtime.read32(pushable + 0xA4U, counter));
+            assert(runtime.read32(0x80122000U + 0x170U, contact));
+            return std::array<std::uint32_t, 3U>{
+                counter, contact, runtime.state().gpr[2]};
+        };
+        // Counted, not yet engaged (old < 5): the counter stores, branch
+        // taken to the latch, no contact bit.
+        assert((run(2U, false, 1U, 3U) ==
+                std::array<std::uint32_t, 3U>{4U, 0U, 4U}));
+        // Counted, engaged (old >= 5): falls into the displacement.
+        assert((run(2U, false, 0U, 6U) ==
+                std::array<std::uint32_t, 3U>{7U, 0U, 7U}));
+        // Held: counter frozen, contact bit re-issued, displacement skipped.
+        assert((run(2U, true, 0U, 6U) ==
+                std::array<std::uint32_t, 3U>{6U, 4U, 7U}));
+        // Divisor one: retail per call.
+        assert((run(1U, false, 0U, 6U) ==
+                std::array<std::uint32_t, 3U>{7U, 0U, 7U}));
+    }
 }
 
 void obstacleCollisionGateServicesContactsThatCannotWait() {
@@ -3386,6 +4256,7 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
     constexpr std::uint32_t AS_LADDER_LATCH = 0x1AU;
     constexpr std::uint32_t AS_LADDER_DISMOUNT = 0x1BU;
     constexpr std::uint32_t AS_CLIMB_LADDER = 0x1CU;
+    constexpr std::uint32_t AS_HOTFOOT = 0x1EU;
 
     // The real site shape: jal wrapper; move $a0,$s0; then a synthetic return.
     const std::array<std::uint32_t, 4U> window{
@@ -3469,6 +4340,46 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
     assert(run(true, AS_LADDER_LATCH, false) == 2U);
     assert(run(true, AS_LADDER_DISMOUNT, false) == 2U);
     assert(run(true, AS_CLIMB_LADDER, false) == 2U);
+    // Untouchable (fire pit) publishes contact bit 0x170:3, which keeps
+    // AS_Hotfoot alive; Think__8Humanoid clears the word every update. A
+    // held update must re-issue the bit or the burning humanoid exits to
+    // AS_Run and the run exception re-ignites it: the run/burn flicker on
+    // fire pits. The bit is set directly (no inner collision) so the burn
+    // damage tick (authored via the pit's +0x90 counter) does not double.
+    assert(run(true, AS_HOTFOOT, false) == 0U);
+    {
+        Runtime runtime;
+        RetimeHooks hooks{span};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        const auto humanoid_marker = marker(2U);
+        assert(runtime.loadBytes(
+            humanoid_callee, std::as_bytes(std::span{humanoid_marker})));
+        assert(runtime.write32(list, humanoid));
+        assert(runtime.write32(humanoid, 0U)); // list terminator
+        assert(runtime.write32(humanoid + 0x58U, 1U << 6U));
+        assert(runtime.write32(humanoid + 0x164U, AS_HOTFOOT));
+        assert(runtime.write32(humanoid + 0x170U, 0U));
+        hooks.program(2U);
+        hooks.state().advance_this_step_ = false; // held
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(8, Runtime::return_sentinel); // $t0
+        runtime.setRegister(16, list);                    // $s0
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 64; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t context = 0U;
+        assert(runtime.read32(humanoid + 0x170U, context));
+        assert((context & 8U) != 0U); // fire contact re-issued on held
+    }
 }
 
 void runningDynamicPassengerDoesNotAccumulateGravity() {
@@ -4415,6 +5326,33 @@ void platformConversionHooksSubStepTheRateSensitiveQuantities() {
 } // namespace
 
 int main() {
+    // A taken branch must execute its delay slot before the target; the
+    // retime hooks rely on this ordering (a hook site that is another
+    // branch's delay slot would lose the branch target, so such sites are
+    // avoided, and this pins the interpreter's behaviour).
+    {
+        using Runtime = stuntmaster::psx::R3000Runtime;
+        Runtime runtime;
+        const std::array<std::uint32_t, 7U> code{
+            encodeI(0x09, 0, 2, 1),     // addiu $v0, $zero, 1
+            encodeI(0x05, 2, 0, 2),     // bnez $v0, +2
+            encodeI(0x09, 0, 3, 0x111), // delay slot: $v1 = 0x111
+            encodeI(0x09, 0, 3, 0x222), // fallthrough: dead
+            encodeI(0x09, 3, 3, 1),     // target: $v1 += 1
+            encodeR(31, 0, 0, 0, 0x08), // jr $ra
+            0U,
+        };
+        assert(runtime.loadBytes(0x80010000U, std::as_bytes(std::span{code})));
+        runtime.reset(0x80010000U, 0U, 0x801F0000U);
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int i = 0; i < 16 && !runtime.atReturnSentinel(); ++i) {
+            const auto s = runtime.step();
+            assert(s.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        assert(runtime.state().gpr[3] == 0x112U); // delay slot ran first
+    }
     stoppedFlipPublicationsAreVBlankBoundedAndSelfContained();
     guestScheduleDerivesEveryRateFromRetail();
     highFrequencyCadenceUsesRetailGameStateNotGpuTraffic();
@@ -4468,6 +5406,7 @@ int main() {
     ladderStateHooksKeepAuthoredCadence();
     retimeOverlayHooksActivatePerFingerprint();
     butchStompEventCounterUsesTheAuthoredClock();
+    authoredCounterHooksKeepTheirCadence();
     platformConversionHooksSubStepTheRateSensitiveQuantities();
     std::cout << "stuntmaster_core_tests: passed\n";
 }

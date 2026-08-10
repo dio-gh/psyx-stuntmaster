@@ -111,6 +111,30 @@ struct RetimeCallGate {
     std::uint32_t callee;
 };
 
+// A held authored-rate countdown guarded by a branch whose delay slot
+// decrements it (`Update__8hdTtlive`, `NavigateWorld`). The hook stands in
+// for the guard branch: on a held update execution resumes at `epilogue` —
+// the shared return after both arms, so no decrement takes effect and no side
+// effect on the guarded paths fires; on a counted update the branch is
+// modelled on the pre-decrement value, recovered by decoding the delay-slot
+// `addiu`.
+struct RetimeCountdownGuard {
+    std::uint32_t epilogue{};
+};
+
+// A counter store that sits in an unconditional `j`'s delay slot
+// (`_TargetMissileAttack`): the virtual-branch machinery runs the store
+// before the hook, so a counted update leaves it in place while a held one
+// undoes it — the increment already ran in an earlier branch's delay slot, so
+// memory holds `new` and the hook restores `new + delta` (`delta = -1` for
+// the +1 counters). `store_address` is the delay-slot `sw` itself (the site
+// is the `j` before it; the hook's rejoin is the `j`'s target, so it cannot
+// be derived from the rejoin).
+struct RetimeStoreUndo {
+    std::int32_t delta{};
+    std::uint32_t store_address{};
+};
+
 struct RetimeHook {
     std::string_view name;
     std::uint32_t pc;      // the guest site
@@ -339,6 +363,14 @@ private:
 // `AI/PUSHABLE.c`, and `Obstacle::HandleHumanoidObstacleCollision` in
 // `AI/OBSTACLE.c`.
 [[nodiscard]] std::span<const RetimeHook> retimeLedgeHooks() noexcept;
+
+// The authored-rate counter holds for the humanoid/Boss action-state machine,
+// the Behaviour layer, and the HUD/menu layer. Every entry is a per-frame
+// private counter that retail steps once per guest update; the two generic
+// bodies (`counterStepHook` for `addiu $vR,$vR,±1` sites and
+// `countdownGuardHook` for branch-guarded decrements) hold them on the master
+// decision. Boot addresses, always live; see `docs/re/RETIMING_CHECKLIST.md`.
+[[nodiscard]] std::span<const RetimeHook> retimeCounterHooks() noexcept;
 
 // The overlay-resident hooks, each carrying the fingerprint that decides whether
 // its overlay is loaded: the recompute/gate hooks (Butch's stomp landing-event

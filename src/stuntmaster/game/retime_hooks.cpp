@@ -375,7 +375,7 @@ struct ObjectPrologue {
     RetimeHeldPrologue prologue;
 };
 
-inline constexpr std::array<ObjectPrologue, 21U> object_prologues{{
+inline constexpr std::array<ObjectPrologue, 23U> object_prologues{{
     {"destructible_think",
      0x80010718U, 0x80010720U, {0x00808021U, 0x18U, {0x8FB00010U, 0U}}},
     {"generator_think",
@@ -413,6 +413,10 @@ inline constexpr std::array<ObjectPrologue, 21U> object_prologues{{
      0x800252BCU, 0x800252C4U, {0x00809821U, 0x70U, {0x8FB30064U, 0U}}},
     {"ladder_think",
      0x80089FDCU, 0x80089FE4U, {0x00808021U, 0x18U, {0x8FB00010U, 0U}}},
+    {"hud_anim_text_overlay",
+     0x8008F66CU, 0x8008F674U, {0x00808021U, 0x18U, {0x8FB00010U, 0U}}},
+    {"hud_tally_update",
+     0x80090AC8U, 0x80090AD0U, {0x00809021U, 0x28U, {0x8FB20018U, 0U}}},
     {"world_effect",
      0x8008BA2CU, 0x8008BA34U, {0x00808821U, 0x38U, {0x8FB1002CU, 0U}}},
     {"flying_world_effect",
@@ -443,6 +447,54 @@ inline constexpr std::array<std::uint32_t, 12U> butch_stomp_window{
     0x8C820268U, 0x00000000U, 0x24420001U, 0xAC820268U,
     0x2842002BU, 0x10400005U, 0x27B20030U, 0x8C820058U,
     0x00000000U, 0x34420002U, 0xAC820058U, 0x8C830268U};
+// The BOL counter-hold windows (boss/behaviour state timers). Each occurs
+// exactly once across BOL/NBOL/OL1/OL2_REL.BIN.
+inline constexpr std::array<std::uint32_t, 12U> boss_collapse_window{
+    0x8E020134U, 0x00000000U, 0x24420001U, 0xAE020134U,
+    0x86030134U, 0x860201D0U, 0x00000000U, 0x0043102AU,
+    0x10400043U, 0x00000000U, 0x8E020050U, 0x00000000U};
+inline constexpr std::array<std::uint32_t, 12U> dante_missile_window{
+    0x241E0001U, 0x8E620268U, 0x26520001U, 0x24420001U,
+    0x08006FAFU, 0xAE620268U, 0x13C00011U, 0x24050045U,
+    0x3C04800EU, 0x8C84D6B4U, 0x00000000U, 0x8C820008U};
+inline constexpr std::array<std::uint32_t, 12U> dante_retarget_window{
+    0x00003021U, 0x080071BAU, 0xAE800298U, 0x080071BAU,
+    0xAE820298U, 0x8E82029CU, 0x00000000U, 0x1440000EU,
+    0x00000000U, 0x3C02800EU, 0x8C42D6B4U, 0x00000000U};
+inline constexpr std::array<std::uint32_t, 12U> butch_dms_window{
+    0x8E020040U, 0x00000000U, 0x24420001U, 0xAE020040U,
+    0x2842001AU, 0x144000AEU, 0x00000000U, 0x8F820C94U,
+    0x00000000U, 0x0053102AU, 0x10400031U, 0xAE000040U};
+inline constexpr std::array<std::uint32_t, 12U> butch_dms_charge_window{
+    0x8E020040U, 0x00000000U, 0x24420001U, 0xAE020040U,
+    0x28420033U, 0x1440000AU, 0x27B10028U, 0x24020AAAU,
+    0xAFA20010U, 0x02402021U, 0x02202821U, 0x02603021U};
+inline constexpr std::array<std::uint32_t, 12U> paul_recovery_window{
+    0x8EC20068U, 0x00000000U, 0x10400002U, 0x2442FFFFU,
+    0xAEC20068U, 0x00008821U, 0x3C048002U, 0x0C01E0C5U,
+    0x248425CCU, 0x0C022A38U, 0x00402021U, 0x00408021U};
+inline constexpr std::array<std::uint32_t, 12U> paul_attack_window{
+    0x8EC20064U, 0x00000000U, 0x2442FFFFU, 0x1840000FU,
+    0xAEC20064U, 0x8EC20018U, 0x00000000U, 0x8C430164U,
+    0x00000000U, 0x2462FFBBU, 0x2C420004U, 0x14400005U};
+inline constexpr std::array<std::uint32_t, 12U> henchman_window{
+    0xAF800CC8U, 0x08007B66U, 0x00000000U, 0x8F830CC8U,
+    0x00000000U, 0x2862000FU, 0x10400004U, 0x24620001U,
+    0xAF820CC8U, 0x08007B66U, 0x00000000U, 0x10E00034U};
+inline constexpr std::array<std::uint32_t, 12U> counter_attack_window{
+    0x8C620094U, 0x00000000U, 0x24420001U, 0x08007BA4U,
+    0xAC620094U, 0xAC660080U, 0x8C8200A8U, 0x00000000U,
+    0x00021080U, 0x00821021U, 0xAC400094U, 0x8C8200A8U};
+// `Pushable::HandleHumanoidCollision`'s push-engage gate (`0x80018EFC`,
+// bnez $v1, 0x80019178). Unique across all four `*_REL.BIN` files.
+inline constexpr std::array<std::uint32_t, 12U> pushable_collision_window{
+    0x8E2200A4U, 0x00000000U, 0x00401821U, 0x24420001U, 0x28630005U,
+    0x1460009EU, 0xAE2200A4U, 0x8E2B001CU, 0x8E2C0020U, 0x8E2D0024U,
+    0xAE2B0074U, 0xAE2C0078U};
+// `_TargetMissileAttack` increments `Dante+0x298` by one before the store, so
+// a held update restores `new - 1`. The store sits in the `j`'s delay slot at
+// `0x8001C3DC`.
+inline constexpr RetimeStoreUndo dante_retarget_undo{-1, 0x8001C3DCU};
 // `Think__5Stack` timeline gate window.
 inline constexpr std::array<std::uint32_t, 12U> stack_timeline_window{
     0x27BDFFE0U, 0xAFB10014U, 0x00808821U, 0x24030001U, 0xAFBF0018U,
@@ -614,6 +666,22 @@ inline constexpr RetimeCallGate obstacle_collision_gate{0x800A96ECU};
 // pusher on a held update. The list wrapper at `0x800A96EC` does nothing beyond
 // walking active humanoids and calling this function for each one.
 inline constexpr std::uint32_t humanoid_obstacle_collision = 0x8007C178U;
+// The pause/tally/FE selected-item colour pulse (`MenuColorNext__FR12xcColour1555`).
+// Its first action is `jal CalcNextColor__FR12xcColour1555`, the only place the
+// colour-chase accumulator steps. Gating that call on the master decision holds
+// the red-to-yellow pulse to the authored rate at any guest update rate; the
+// site's delay slot (`move $s0, $a0`) runs on both paths. The `$s0`/`$ra`
+// prologue saves at `0x8005CD14`/`0x8005CD18` are unaffected.
+inline constexpr RetimeCallGate menu_colour_calc_gate{0x8005CC44U};
+// `CBVEffect::Update` (`0x8008CF94`) is the third WEffect-family Update
+// override (beside `WEffect::Update` at `0x8008BA24` and `FWEffect::Update`
+// at `0x8008C47C`) and its only call is `Update__11CBVPrimData`
+// (`0x80098BE0`), which advances the colour/UV animation's `+0x3C` countdown
+// and `+0x28` UV cursor once per call. The held prologues at
+// `0x8008BA2C`/`0x8008C484` do not catch it — the vtable dispatches CBV
+// effects to this distinct address — so the `jal` is gated directly. The
+// site's delay slot is a `nop`.
+inline constexpr RetimeCallGate cbv_uv_gate{0x80098BE0U};
 
 // Gating the entire obstacle pass fixed passenger/carry timing, but Pushable's
 // collision handler is also the producer for the player's `AS_PushObject`
@@ -621,11 +689,13 @@ inline constexpr std::uint32_t humanoid_obstacle_collision = 0x8007C178U;
 // an unrefreshed contact on the next update, leaves the state, and the counted
 // collision immediately enters it again: the visible push/not-push flicker.
 //
-// Keep the coupled pass at the authored rate normally. Four contact families
+// Keep the coupled pass at the authored rate normally. Five contact families
 // cannot wait for the counted update:
 //
-// - an active `AS_PushObject` humanoid needs its contact bit and displacement
-//   refreshed every update;
+// - an active `AS_PushObject` humanoid needs its contact bit refreshed every
+//   update (the push displacement itself is held by the OL1
+//   `pushable_collision_hold` gate, so the pushable still moves once per
+//   authored step);
 // - an `AS_Run` humanoid moving across a dynamic obstacle needs its grounded
 //   contact and passenger membership refreshed every update. Otherwise one
 //   missed authored pass changes it to `AS_Fall`, and the airborne exception
@@ -640,6 +710,14 @@ inline constexpr std::uint32_t humanoid_obstacle_collision = 0x8007C178U;
 //   publishes. The bit is cleared at the end of every update, so skipping the
 //   held collision makes the latch/climb state reinitialize itself before the
 //   next counted update and resets the climb animation forever.
+// - `AS_Hotfoot` (on fire): `Untouchable`'s fire contact bit (`+0x170:3`) is
+//   what keeps the burning state alive, and `Think__8Humanoid` clears the
+//   whole context word at the end of every update. Skipping the held
+//   collision lets `_Hotfoot` exit to `AS_Run`, and the run exception then
+//   re-ignites the fire on the next update: the visible run/burn flicker on
+//   fire pits. Unlike the other exceptions, the burning state needs only the
+//   bit — the inner collision would also apply the per-authored burn damage
+//   tick on the held update — so the hook re-issues `+0x170:3` directly.
 //
 // For these cases run that humanoid's inner obstacle collision directly on a
 // held update. This is the same call the list wrapper would make, but it does
@@ -660,6 +738,7 @@ std::uint32_t obstacleCollisionPassHook(
     constexpr std::uint32_t action_fall = 0x0DU;
     constexpr std::uint32_t action_hard_fall = 0x0EU;
     constexpr std::uint32_t action_push_object = 0x13U;
+    constexpr std::uint32_t action_hotfoot = 0x1EU;
     constexpr std::uint32_t action_ladder_latch_top = 0x19U;
     constexpr std::uint32_t action_climb_ladder = 0x1CU;
     constexpr std::size_t max_humanoids = 64U;
@@ -691,7 +770,21 @@ std::uint32_t obstacleCollisionPassHook(
                 action_state <= action_climb_ladder;
             if ((flags & active_humanoid_flag) != 0U &&
                 (action_state == action_push_object || airborne ||
-                 action_state == action_run || ladder_contact)) {
+                 action_state == action_run || ladder_contact ||
+                 action_state == action_hotfoot)) {
+                if (action_state == action_hotfoot) {
+                    // The burning state needs only the fire pit's contact bit
+                    // (`+0x170:3`); the full inner collision would also apply
+                    // `Untouchable`'s per-authored damage tick (`+0x90 == 0`)
+                    // on this held update, doubling the burn rate. Re-issue
+                    // the bit directly instead.
+                    std::uint32_t context = 0U;
+                    if (runtime.read32(humanoid + 0x170U, context)) {
+                        static_cast<void>(runtime.write32(
+                            humanoid + 0x170U, context | 8U));
+                    }
+                    return rejoin;
+                }
                 hostWriteRegister(state, 4, humanoid); // $a0, inner-call arg
                 hostWriteRegister(state, 31, rejoin);  // $ra, as the wrapper
                 return humanoid_obstacle_collision;
@@ -710,7 +803,35 @@ std::uint32_t obstacleCollisionPassHook(
     return gate->callee;
 }
 
-constexpr std::array<RetimeHook, 5U> clock_hooks{{
+// The pause menu's per-frame decider. `Step__4Time` (the play-state decider)
+// does not run while `gsMenuState` is up, so the master hold decision would
+// otherwise stay frozen at whatever the last play update decided — the pause
+// menu's own authored-rate animation (the selected-item colour chase) then
+// either never advances or advances every guest update, depending on the
+// stale phase. `MenuDraw__FP7MenuMgr` (`0x80029DB8`) runs once per guest
+// update in every menu state (pause, location menu, end-level), so this hook
+// publishes the decision there. It is never called during play, so the
+// `Step__4Time` decider and this one cannot both run in one update. The site
+// is the prologue's `move $s0, $a0` (`0x80029DC0`); its delay slot
+// (`sw $ra, 0x18($sp)`) runs on both paths and the hook models the displaced
+// move. A divisor of one always counts, exactly as a retail-cadence menu
+// needs.
+std::uint32_t menuFrameDecisionHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime&,
+    std::uint32_t rejoin, const void*) noexcept {
+    retime.decide();
+    hostWriteRegister(state, 16, state.gpr[4]); // $s0 = $a0, displaced move
+    return rejoin;
+}
+
+constexpr std::array<RetimeHook, 8U> clock_hooks{{
+    {"menu_frame_decision",
+     0x80029DC0U,
+     0x80029DC8U,
+     RetimeHookKind::semantic,
+     &menuFrameDecisionHook},
     {"vram_animation",
      0x8002AD90U,
      0x8002AD98U,
@@ -739,6 +860,18 @@ constexpr std::array<RetimeHook, 5U> clock_hooks{{
      RetimeHookKind::gate,
      &obstacleCollisionPassHook,
      &obstacle_collision_gate},
+    {"menu_colour_pulse",
+     0x8005CD1CU,
+     0x8005CD24U,
+     RetimeHookKind::gate,
+     &callGateHook,
+     &menu_colour_calc_gate},
+    {"cbv_effect_uv_animation",
+     0x8008CFACU,
+     0x8008CFB4U,
+     RetimeHookKind::gate,
+     &callGateHook,
+     &cbv_uv_gate},
 }};
 
 // ---------------------------------------------------------------------------
@@ -845,38 +978,349 @@ constexpr std::array<RetimeHook, 3U> ledge_hooks{{
 }};
 
 // ---------------------------------------------------------------------------
-// Overlay recompute / gate hooks (BOL/NBOL)
-
-// `Butch::_Stomp` owns a private frame counter at `+0x268`. Animation 0x42 is
-// already advanced through the authored-rate scene-animation gate, but retail
-// increments this counter directly every time the state handler runs. At 60
-// Hz that made the camera shake, effect, sounds, and nearby-player damage fire
-// at update 42 while the landing pose was only halfway through.
+// Authored-rate counter holds (humanoid/Boss state machine, Behaviour layer,
+// HUD/menu layer)
 //
-// The site is `sw $v0,0x268($a0)` after retail has computed `old + 1`; its
-// delay slot has already produced `slti $v0,$v0,0x2b`. Re-read the old field,
-// advance it only on the counted update, and reproduce both the store and the
-// comparison result. A divisor of one is therefore retail-identical. Holding
-// only this counter leaves Butch's movement, collision, and state handler live
-// on every high-frequency update.
-std::uint32_t butchStompCounterHook(
+// Every retail site in this family is a private per-frame counter that retail
+// steps once per guest update — a state-timer, a decision/backoff countdown,
+// or a pulse/slide counter — none of which reads the master clock. The two
+// generic bodies below hold them on the published decision. Both decode their
+// instructions from guest RAM, so the table carries no per-site arithmetic.
+
+// Decodes a branch/jump word at `branch_pc` (normally a counter site's delay
+// slot) and returns the resume PC: the branch target when the condition holds
+// on `value` (unconditional for `j`/`jal`), otherwise the fallthrough
+// `branch_pc + 8` (the instruction after the branch's own delay slot).
+std::uint32_t branchResume(
+    std::uint32_t branch_pc,
+    std::uint32_t word,
+    std::uint32_t value,
+    std::uint32_t right) noexcept {
+    const auto opcode = word >> 26U;
+    if (opcode == 0x02U || opcode == 0x03U) { // j / jal
+        return (branch_pc & 0xF0000000U) | ((word & 0x03FFFFFFU) << 2U);
+    }
+    const auto imm = static_cast<std::int32_t>(
+        static_cast<std::int16_t>(word & 0xFFFFU));
+    const auto target = branch_pc + 4U +
+        static_cast<std::uint32_t>(imm << 2U);
+    auto taken = false;
+    switch (opcode) {
+    case 0x07U: taken = static_cast<std::int32_t>(value) > 0; break; // bgtz
+    case 0x06U: taken = static_cast<std::int32_t>(value) <= 0; break; // blez
+    case 0x05U: taken = value != right; break; // bne
+    case 0x04U: taken = value == right; break; // beq
+    case 0x01U: // REGIMM: bltz / bgez
+        taken = ((word >> 16U) & 0x1FU) == 0U
+            ? static_cast<std::int32_t>(value) < 0
+            : static_cast<std::int32_t>(value) >= 0;
+        break;
+    default: break;
+    }
+    return taken ? target : branch_pc + 8U;
+}
+
+[[nodiscard]] constexpr bool isBranchOpcode(std::uint32_t opcode) noexcept {
+    return opcode == 0x01U || opcode == 0x02U || opcode == 0x03U ||
+        (opcode >= 0x04U && opcode <= 0x07U);
+}
+
+// Shape 1: the site is `addiu $vR, $vR, ±1` (or `addiu $vR, $vSrc, ±1`), or a
+// plain `sw $vR, off($base)` when the counter update runs in a preceding
+// branch's delay slot (`_Pause` decrements in the guard's delay slot, so the
+// store is the only safe site — a site that is itself a branch delay slot
+// would lose the branch target, because the hook dispatch overwrites
+// `next_pc`). The site's delay slot has already run when the hook fires, so
+// on a held update the register and memory already hold the old value: the
+// hook only writes the identity (`$vR = $vSrc`, a no-op for the common
+// `rs == rt` form) so later stores and comparisons keep the counter frozen.
+// On a counted update it models the addiu and repairs the two delay-slot
+// forms that consumed the pre-step value: a `sw $vR, off($base)` must be
+// re-issued with the new value, and a `slt[u] $vD, $x, $vR` must be
+// recomputed with it. For a `sw` site a held update skips the store and a
+// counted one issues it. Anything unrecognized falls back to retail.
+//
+// Two-deep form (BOL bosses): the addiu's delay slot is a branch and the
+// counter store sits in the branch's own delay slot two words after the site
+// (`_MissileAttack`'s `addiu; j; sw`, `_PaulDMS`'s `addiu; blez; sw`,
+// `CounterAttack`'s `addiu; j; sw`). The virtual-branch machinery runs the
+// branch (on the old value) then fires the hook with the branch state
+// overwritten, so the hook decodes the branch target itself, performs the
+// store (the branch's own delay-slot store never runs), and re-evaluates the
+// branch on the new value. A held update resumes at the branch's decision on
+// the old (held) value, so a countdown at its end keeps deferring its
+// transition exactly as retail's next authored step would.
+std::uint32_t counterStepHook(
     psx::R3000State& state,
     RetimeState& retime,
     psx::R3000Runtime& runtime,
     std::uint32_t rejoin, const void*) noexcept {
-    constexpr std::uint32_t counter_offset = 0x268U;
-    constexpr std::uint32_t active_until = 0x2BU;
-    std::uint32_t counter = 0U;
-    static_cast<void>(runtime.read32(
-        state.gpr[4] + counter_offset, counter)); // $a0 = Butch
-    if (!retime.hold()) {
-        ++counter;
+    const auto site = rejoin - 8U;
+    std::uint32_t word = 0U;
+    if (!runtime.read32(site, word)) {
+        return rejoin;
     }
-    static_cast<void>(runtime.write32(
-        state.gpr[4] + counter_offset, counter));
-    hostWriteRegister(state, 2, counter < active_until ? 1U : 0U); // $v0
+    const auto opcode = word >> 26U;
+    std::uint32_t delay = 0U;
+    const bool delay_is_branch = runtime.read32(site + 4U, delay) &&
+        isBranchOpcode(delay >> 26U);
+    if (opcode == 0x2BU) { // sw $rt, off($base): a store-site hold
+        // A `j` in the delay slot (`henchman_engage_delay`) resumes at its
+        // target rather than the plain rejoin.
+        const auto resume = delay_is_branch
+            ? branchResume(site + 4U, delay, state.gpr[(word >> 21U) & 0x1FU], 0U)
+            : rejoin;
+        if (!retime.hold()) {
+            const auto base = (word >> 21U) & 0x1FU;
+            const auto rt = (word >> 16U) & 0x1FU;
+            const auto off = static_cast<std::int32_t>(
+                static_cast<std::int16_t>(word & 0xFFFFU));
+            static_cast<void>(runtime.write32(
+                state.gpr[base] + static_cast<std::uint32_t>(off),
+                state.gpr[rt]));
+        }
+        return resume;
+    }
+    if (opcode != 0x09U) {
+        return rejoin; // not the addiu form: leave retail's flow alone
+    }
+    const auto rs = (word >> 21U) & 0x1FU;
+    const auto rt = (word >> 16U) & 0x1FU;
+    const auto delta = static_cast<std::int32_t>(
+        static_cast<std::int16_t>(word & 0xFFFFU));
+    if (delay_is_branch) {
+        std::uint32_t store = 0U;
+        if (!runtime.read32(site + 8U, store) ||
+            (store >> 26U) != 0x2BU || ((store >> 16U) & 0x1FU) != rt) {
+            return rejoin; // not the two-deep store form
+        }
+        const auto base = (store >> 21U) & 0x1FU;
+        const auto off = static_cast<std::int32_t>(
+            static_cast<std::int16_t>(store & 0xFFFFU));
+        const auto rhs = (delay >> 16U) & 0x1FU; // branch's rt operand
+        if (retime.hold()) {
+            hostWriteRegister(state, rt, state.gpr[rs]);
+            return branchResume(
+                site + 4U, delay, state.gpr[rs], state.gpr[rhs]);
+        }
+        const auto new_value = static_cast<std::uint32_t>(
+            static_cast<std::int32_t>(state.gpr[rs]) + delta);
+        hostWriteRegister(state, rt, new_value);
+        static_cast<void>(runtime.write32(
+            state.gpr[base] + static_cast<std::uint32_t>(off), new_value));
+        return branchResume(site + 4U, delay, new_value, state.gpr[rhs]);
+    }
+    if (retime.hold()) {
+        // Identity: `$vR = $vSrc` (no-op when rs == rt). The delay slot's
+        // store of the old value stands, and later comparisons read old.
+        hostWriteRegister(state, rt, state.gpr[rs]);
+        return rejoin;
+    }
+    const auto new_value = static_cast<std::uint32_t>(
+        static_cast<std::int32_t>(state.gpr[rs]) + delta);
+    hostWriteRegister(state, rt, new_value);
+    if (runtime.read32(site + 4U, delay)) {
+        const auto opcode = delay >> 26U;
+        if (opcode == 0x2BU && ((delay >> 16U) & 0x1FU) == rt) {
+            // sw $rt, off($base): the delay slot stored the old value.
+            const auto base = (delay >> 21U) & 0x1FU;
+            const auto off = static_cast<std::int32_t>(
+                static_cast<std::int16_t>(delay & 0xFFFFU));
+            static_cast<void>(runtime.write32(
+                state.gpr[base] + static_cast<std::uint32_t>(off),
+                new_value));
+        } else if (opcode == 0U) {
+            const auto funct = delay & 0x3FU;
+            if (funct == 0x2AU || funct == 0x2BU) { // slt / sltu
+                const auto rd = (delay >> 11U) & 0x1FU;
+                const auto lhs = (delay >> 21U) & 0x1FU;
+                const auto rhs = (delay >> 16U) & 0x1FU;
+                if (lhs == rt || rhs == rt) {
+                    const auto a = state.gpr[lhs];
+                    const auto b = state.gpr[rhs];
+                    const auto result = funct == 0x2AU
+                        ? (static_cast<std::int32_t>(a) <
+                                   static_cast<std::int32_t>(b)
+                               ? 1U
+                               : 0U)
+                        : (a < b ? 1U : 0U);
+                    hostWriteRegister(state, rd, result);
+                }
+            }
+        }
+    }
     return rejoin;
 }
+
+// Shape 2: the site is a guard branch (`bgtz`/`bltz`/`blez`/`bgez`) whose
+// delay slot decrements the counter. The delay slot has already run when the
+// hook fires (`$vR = old + delta`), so on a held update execution jumps to
+// the epilogue — the shared return after both arms — leaving the countdown
+// and its guarded side effects untouched. On a counted update the branch is
+// modelled on the recovered pre-decrement value; the branch target's delay
+// slot (the store) then runs normally.
+std::uint32_t countdownGuardHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin,
+    const void* context) noexcept {
+    const auto* guard = static_cast<const RetimeCountdownGuard*>(context);
+    if (retime.hold()) {
+        return guard->epilogue;
+    }
+    const auto site = rejoin - 8U;
+    std::uint32_t word = 0U;
+    if (!runtime.read32(site, word)) {
+        return rejoin;
+    }
+    std::uint32_t delay = 0U;
+    auto delta = 1;
+    if (runtime.read32(site + 4U, delay) && (delay >> 26U) == 0x09U &&
+        ((delay >> 16U) & 0x1FU) == ((delay >> 21U) & 0x1FU)) {
+        delta = static_cast<std::int32_t>(
+            static_cast<std::int16_t>(delay & 0xFFFFU));
+    }
+    const auto rs = (word >> 21U) & 0x1FU;
+    const auto old = static_cast<std::int32_t>(state.gpr[rs]) - delta;
+    const auto imm = static_cast<std::int32_t>(
+        static_cast<std::int16_t>(word & 0xFFFFU));
+    const auto target = site + 4U + static_cast<std::uint32_t>(imm << 2U);
+    auto taken = false;
+    switch (word >> 26U) {
+    case 0x07U: // bgtz
+        taken = old > 0;
+        break;
+    case 0x06U: // blez
+        taken = old <= 0;
+        break;
+    case 0x01U: // REGIMM: bltz / bgez
+        taken = ((word >> 16U) & 0x1FU) == 0U ? old < 0 : old >= 0;
+        break;
+    default:
+        return rejoin;
+    }
+    return taken ? target : rejoin;
+}
+
+// A counter store that sits in an unconditional `j`'s delay slot
+// (`_TargetMissileAttack`, `Dante+0x298`): the virtual-branch machinery runs
+// the store (storing `new` — the increment already ran in an earlier branch's
+// delay slot) and then fires the hook. A counted update leaves the store in
+// place and resumes at the `j`'s target; a held one restores `old = new +
+// delta` (`delta = -1` for the +1 counters) and resumes at the same target.
+std::uint32_t jumpStoreUndoHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin, const void* context) noexcept {
+    const auto* undo = static_cast<const RetimeStoreUndo*>(context);
+    std::uint32_t store = 0U;
+    if (runtime.read32(undo->store_address, store) &&
+        (store >> 26U) == 0x2BU) {
+        if (retime.hold()) {
+            const auto base = (store >> 21U) & 0x1FU;
+            const auto rt = (store >> 16U) & 0x1FU;
+            const auto off = static_cast<std::int32_t>(
+                static_cast<std::int16_t>(store & 0xFFFFU));
+            static_cast<void>(runtime.write32(
+                state.gpr[base] + static_cast<std::uint32_t>(off),
+                static_cast<std::uint32_t>(
+                    static_cast<std::int32_t>(state.gpr[rt]) + undo->delta)));
+        }
+    }
+    return rejoin;
+}
+
+// `Pushable::HandleHumanoidCollision` (OL1 `0x80018AF8`) applies the push
+// displacement and keeps the push-contact bit alive. The obstacle pass runs
+// it on every guest update for an active pusher (the `AS_PushObject`
+// exception), so the displacement and the `+0xA4` engage counter would both
+// advance twice per authored step at 60 Hz — a shoved vending machine moves
+// at 2x. The gate sits on the engage branch (`0x80018EFC`, `bnez $v1,
+// 0x80019178`, taken while the engage counter is below 5): the displacement
+// block (which also re-issues the contact bit `Humanoid+0x170:2`) runs only
+// on counted updates. On a held update the counter store in the branch's
+// delay slot is undone, the contact bit is re-issued by the hook (the state
+// stays latched, exactly as the pusher exception intends), and execution
+// resumes at the skip target `0x80019178` (the `+0x9C` latch store).
+// `$s1`/`$s2` are the pushable/humanoid (from the prologue's `move`).
+std::uint32_t pushableCollisionHoldHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin, const void*) noexcept {
+    constexpr std::uint32_t skip_displacement = 0x80019178U;
+    if (!retime.hold()) {
+        // Model the gate branch: `$v1` = (old engage counter < 5), computed
+        // by retail's `slti` at `0x80018EF8`.
+        return state.gpr[3] != 0U ? skip_displacement : rejoin;
+    }
+    // The delay slot (`sw $v0, 0xa4($s1)`) already stored old + 1: undo it.
+    std::uint32_t counter = 0U;
+    static_cast<void>(runtime.read32(state.gpr[17] + 0xA4U, counter)); // $s1
+    static_cast<void>(runtime.write32(state.gpr[17] + 0xA4U, counter - 1U));
+    // Re-issue the push-contact bit the skipped block would have set.
+    std::uint32_t flags = 0U;
+    static_cast<void>(runtime.read32(state.gpr[18] + 0x170U, flags)); // $s2
+    static_cast<void>(runtime.write32(state.gpr[18] + 0x170U, flags | 4U));
+    return skip_displacement;
+}
+
+// Shape 1 sites, read out of the retail boot executable (`rejoin` is the
+// instruction after the delay slot). The context is null: both the addiu and
+// its delay slot are decoded from guest RAM.
+inline constexpr std::array<RetimeHook, 11U> counter_step_hooks{{
+    {"player_collapse_timer",
+     0x80032EE0U, 0x80032EE8U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"player_pole_swing_timer",
+     0x800331B4U, 0x800331BCU,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"player_slope_slide_timer",
+     0x800338B8U, 0x800338C0U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"humanoid_collapse_timer",
+     0x80068EDCU, 0x80068EE4U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"humanoid_got_hit_free_form_timer",
+     0x8006C3FCU, 0x8006C404U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"humanoid_back_grab_timer",
+     0x800683D4U, 0x800683DCU,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"humanoid_pause_timer",
+     0x800672D8U, 0x800672E0U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"behaviour_backoff_timer",
+     0x80075924U, 0x8007592CU,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"behaviour_backout_timer",
+     0x80075B2CU, 0x80075B34U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"behaviour_complex_attack_index",
+     0x80074A50U, 0x80074A58U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+    {"behaviour_navigate_enemies_timer",
+     0x80076CB8U, 0x80076CC0U,
+     RetimeHookKind::recompute, &counterStepHook, nullptr},
+}};
+
+// Shape 2 sites: the countdown guard plus its epilogue (the shared return
+// after both arms of the guard).
+inline constexpr RetimeCountdownGuard hud_ttlive_epilogue{0x8008EF34U};
+inline constexpr RetimeCountdownGuard navigate_world_epilogue{0x80076C6CU};
+inline constexpr std::array<RetimeHook, 2U> countdown_guard_hooks{{
+    {"hud_ttlive_countdown",
+     0x8008EF1CU, 0x8008EF24U,
+     RetimeHookKind::gate, &countdownGuardHook, &hud_ttlive_epilogue},
+    {"behaviour_navigate_world_hold",
+     0x800768B0U, 0x800768B8U,
+     RetimeHookKind::gate, &countdownGuardHook, &navigate_world_epilogue},
+}};
+
+// ---------------------------------------------------------------------------
+// Overlay recompute / gate hooks (BOL/NBOL)
 
 // `Think__5Arrow`'s overlay-local bob counter (`0x8001BDAC`). The site is
 // `addiu $v0, $v0, 1`; its delay slot (`sw $v0, 0x74($s2)`) runs before the
@@ -1294,6 +1738,22 @@ std::span<const RetimeHook> retimeLedgeHooks() noexcept {
     return ledge_hooks;
 }
 
+std::span<const RetimeHook> retimeCounterHooks() noexcept {
+    static const std::vector<RetimeHook> hooks = [] {
+        std::vector<RetimeHook> out;
+        out.insert(out.end(), counter_step_hooks.begin(), counter_step_hooks.end());
+        out.insert(
+            out.end(), countdown_guard_hooks.begin(), countdown_guard_hooks.end());
+        std::sort(
+            out.begin(), out.end(),
+            [](const RetimeHook& a, const RetimeHook& b) noexcept {
+                return a.pc < b.pc;
+            });
+        return out;
+    }();
+    return hooks;
+}
+
 // Built once, lazily, so each overlay hook's fingerprint window can borrow the
 // one already carried by its byte overlay trampoline — the single source of
 // truth for the extracted overlay bytes until the trampolines are deleted. The
@@ -1306,12 +1766,82 @@ std::span<const RetimeOverlayHook> retimeOverlayHooks() noexcept {
     static const std::vector<RetimeOverlayHook> hooks = [] {
         std::vector<RetimeOverlayHook> out{
             {{"butch_stomp_counter",
-              0x8001ADD8U,
-              0x8001ADE0U,
-              RetimeHookKind::semantic,
-              &butchStompCounterHook},
+              0x8001ADD4U,
+              0x8001ADDCU,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
              0x8001ADCCU,
              butch_stomp_window},
+            {{"boss_collapse_timer",
+              0x8001A9B8U,
+              0x8001A9C0U,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001A9B0U,
+             boss_collapse_window},
+            {{"dante_missile_counter",
+              0x8001C294U,
+              0x8001C29CU,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001C288U,
+             dante_missile_window},
+            {{"dante_retarget_counter",
+              0x8001C3D8U,
+              0x8001C6E8U,
+              RetimeHookKind::recompute,
+              &jumpStoreUndoHook, &dante_retarget_undo},
+             0x8001C3CCU,
+             dante_retarget_window},
+            {{"butch_dms_timer",
+              0x8001CD3CU,
+              0x8001CD44U,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001CD34U,
+             butch_dms_window},
+            {{"butch_dms_charge_timer",
+              0x8001D20CU,
+              0x8001D214U,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001D204U,
+             butch_dms_charge_window},
+            {{"paul_dms_recovery_timer",
+              0x8001D948U,
+              0x8001D950U,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001D93CU,
+             paul_recovery_window},
+            {{"paul_dms_attack_timer",
+              0x8001DAD0U,
+              0x8001DAD8U,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001DAC8U,
+             paul_attack_window},
+            {{"henchman_engage_delay",
+              0x8001EA94U,
+              0x8001EA9CU,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001EA74U,
+             henchman_window},
+            {{"counter_attack_hit_frames",
+              0x8001EE38U,
+              0x8001EE40U,
+              RetimeHookKind::recompute,
+              &counterStepHook, nullptr},
+             0x8001EE30U,
+             counter_attack_window},
+            {{"pushable_collision_hold",
+              0x80018EFCU,
+              0x80018F04U,
+              RetimeHookKind::semantic,
+              &pushableCollisionHoldHook, nullptr},
+             0x80018EE8U,
+             pushable_collision_window},
             {{"arrow_bob",
               0x8001BDACU,
               0x8001BDB0U,
