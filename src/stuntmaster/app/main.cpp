@@ -984,6 +984,8 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             std::optional<std::uint64_t> previous_world_frame_instructions;
             std::optional<std::uint64_t> presented_gpu_frame_sequence;
             std::uint16_t previous_pad_one_buttons = 0xFFFFU;
+            std::uint32_t previous_rumble_word = 0xFFFFFFFFU;
+            std::uint32_t previous_applied_rumble_word = 0xFFFFFFFFU;
             std::deque<std::uint32_t> pending_vsync_callbacks;
             // Retail's DrawSync callback is persistent, not one-shot:
             // `QueueLayer` installs it when the render queue goes idle-to-busy
@@ -1020,6 +1022,10 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             stuntmaster::core::BoundedLatestMailbox<RetainedGpuFrame, 2U>
                 frame_mailbox;
             std::atomic<std::uint16_t> latest_pad_one_buttons{0xFFFFU};
+            // Packed rumble request from the guest worker: motor1 |
+            // motor2 << 8 | duration_ms << 16. Zero means no active shake.
+            // The main thread applies it to the SDL game controller.
+            std::atomic<std::uint32_t> latest_rumble_request{};
             std::atomic<bool> guest_finished{};
             constexpr std::uint8_t quick_save_requested = 1U << 0U;
             constexpr std::uint8_t quick_load_requested = 1U << 1U;
@@ -2527,6 +2533,47 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                             }
                             retail_hle.setPadOneState(true, buttons);
                         }
+                        // Publish the retail shake request. The game's
+                        // SetVibration (0x8002D540) writes the DualShock motor
+                        // bytes at 0x800DD6AC (big) and 0x800DD6AD (small) plus
+                        // the shake countdown at 0x800DC9D8 (gp+0xd60/0xd61 and
+                        // gp+0x8c); the countdown pump clears the table when a
+                        // shake expires. Published on change only; the main
+                        // thread re-arms SDL while a shake stays active.
+                        if (options->run_live) {
+                            std::uint8_t rumble_motor1{};
+                            std::uint8_t rumble_motor2{};
+                            std::uint32_t shake_frames{};
+                            std::uint32_t rumble_word = 0U;
+                            if (runtime.read8(
+                                    0x800DD6ACU, rumble_motor1) &&
+                                runtime.read8(
+                                    0x800DD6ADU, rumble_motor2) &&
+                                runtime.read32(0x800DC9D8U, shake_frames) &&
+                                shake_frames != 0U) {
+                                const auto duration_ms =
+                                    static_cast<std::uint32_t>(
+                                        (static_cast<std::uint64_t>(
+                                             shake_frames) *
+                                         1000U) /
+                                        std::max<std::uint32_t>(
+                                            retail_hle.vblankRate(), 1U));
+                                rumble_word =
+                                    static_cast<std::uint32_t>(
+                                        rumble_motor1) |
+                                    (static_cast<std::uint32_t>(
+                                         rumble_motor2)
+                                     << 8U) |
+                                    (std::min<std::uint32_t>(
+                                         duration_ms, 0xFFFFU)
+                                     << 16U);
+                            }
+                            if (rumble_word != previous_rumble_word) {
+                                previous_rumble_word = rumble_word;
+                                latest_rumble_request.store(
+                                    rumble_word, std::memory_order_release);
+                            }
+                        }
                         // Mixing here keeps audio on the guest's clock rather
                         // than a host one. 44100 Hz against the console's 60
                         // VBlanks is exactly 735 stereo frames; a faster
@@ -3196,6 +3243,21 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         if (live_presenter->takeWidescreenToggleRequest()) {
                             widescreen_toggle_requested.store(
                                 true, std::memory_order_release);
+                        }
+                        // Apply the guest's shake on the SDL-owning thread.
+                        // Re-arm while a shake is active so a rumble whose SDL
+                        // duration expires early stays continuous; a zero word
+                        // stops it once.
+                        const auto rumble_word = latest_rumble_request.load(
+                            std::memory_order_acquire);
+                        if (rumble_word != previous_applied_rumble_word ||
+                            rumble_word != 0U) {
+                            previous_applied_rumble_word = rumble_word;
+                            live_presenter->applyRumble(
+                                static_cast<std::uint8_t>(rumble_word),
+                                static_cast<std::uint8_t>(
+                                    rumble_word >> 8U),
+                                rumble_word >> 16U);
                         }
                         if (suppress_movie_start &&
                             (physical_buttons &

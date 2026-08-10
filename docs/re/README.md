@@ -2064,6 +2064,44 @@ Use the committed disassembler for focused verification:
 python tools/disassemble.py .research/SLUS_006.84 0x8002D830 --bytes 0x68
 ```
 
+### Vibration boundary — verified
+
+The game links its own Sony libpad copy (boot `0x8005A674`..`0x8005C1A8`),
+whose pad-detection state machine runs in the SIO interrupt handler
+(`_padIntPad`, `0x8005AD24`). This host emulates neither the SIO port nor its
+interrupts, so the machine never runs and the driver's per-port state byte
+stays at its BSS zero — which is why the game saw no vibration support.
+
+- The per-port structs are 0xF0 bytes at `0x800E28FC` (port 0) and
+  `0x800E29EC` (port 1), reached through the pointer at `0x800D89F0` set by
+  `_padInit` (`0x800AD78C`, called from `PadInitDirect`).
+- `PadGetState` (`0x8005A824`) returns the raw state byte (+0x49) whenever
+  the struct is in the clean condition — b37/b38/b39 zero, `next == self`
+  (set by `PadInitDirect`), direct-buffer byte zero — which the host
+  maintains; the value mapping at `0x8005A898` (`{2,3} -> 1`, `6 -> 4`)
+  applies only to transient/error conditions with commands pending.
+- The state byte reaches 6 only through the SIO act-info load (`0x8005C0A8`,
+  with mode byte +0x46 set to 0xFE; the load starts at state 4, `0x8005BBC8`).
+  The game gates vibration on `PadGetState(0) == 6`: the Options vibration
+  toggle (`0x8002E620`), the shake function (`0x8002D6C0`), and the shake
+  countdown pump (`0x8002D5A4`).
+- The host publishes the DualShock fields on every VBlank in
+  `RetailHle::onVBlank`, self-healing against the driver's struct reset
+  (`0x800AD87C`): state 6 (+0x49), mode 0xFE (+0x46), actuator count 2
+  (+0xE4, `PadInfoMode` info 3), comb count 1 (+0xE3), mode-switch mask 0x73
+  (+0xE6, info 1), current mode 0x41 (+0xE8), layout 1/2 (+0xE9/+0xEA).
+- Motor values: `SetVibration` (`0x8002D540`) writes motor A to `0x800DD6AC`
+  and motor B to `0x800DD6AD` (the `PadSetAct` table at gp+0xd60; Sony
+  order, big then small) plus the shake countdown at `0x800DC9D8` (gp+0x8c);
+  the pump clears the table when the countdown expires (`0x8002D52C`). The
+  guest worker reads those three words and the main thread applies
+  `SDL_GameControllerRumble` (big -> low frequency, small -> high), which
+  needs no SDL haptics subsystem.
+- The rebuilt Driver 2 `pad.c` in the REDRIVER2 checkout confirms the same
+  SDK generation's convention independently: per-frame
+  `PadSetAct(port, motors[2], 2)` with motors[0] = big/alarm and
+  motors[1] = small/speed, gated on `PadGetState == PadStateStable` (6).
+
 ### The render queue completes layers by polling, not by callback — verified
 
 `VSCallback__Fe` completes a queued swap at `0x800A0188`: it calls the display

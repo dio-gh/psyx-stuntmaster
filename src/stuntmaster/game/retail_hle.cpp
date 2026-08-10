@@ -33,6 +33,38 @@ constexpr std::uint32_t game_play_movie_return_address = 0x8002BD0CU;
 constexpr std::uint32_t title_movie_fade_complete_address = 0x8002C178U;
 constexpr std::uint32_t pad_one_buffer_address = 0x800DFA30U;
 constexpr std::uint32_t pad_two_buffer_address = 0x800DFA64U;
+// The game's linked libpad copy keeps one 0xF0-byte pad struct per port in
+// BSS (base published through the global at 0x800D89F0). Its pad-detection
+// state machine runs in the SIO interrupt handler, which this host does not
+// emulate, so the driver never advances past the BSS zero state byte. The
+// host therefore publishes the fully-detected DualShock configuration the
+// retail vibration checks expect: `PadGetState(0) == 6` (state byte +0x49,
+// returned raw in the clean-stable condition) gates the Options vibration
+// toggle, the shake function, and the shake countdown pump.
+constexpr std::uint32_t pad_struct_port_zero_address = 0x800E28FCU;
+// +0x46: driver mode byte, 0xFE marks detection complete (act info loaded).
+constexpr std::uint32_t pad_struct_mode_offset = 0x46U;
+// +0x49: pad state byte; 6 is the act-info-loaded, DualShock-ready state.
+constexpr std::uint32_t pad_struct_state_offset = 0x49U;
+// +0xE3/+0xE4: actuator-combination count and actuator count (PadInfoMode
+// info 3/4), 1 and 2 for a DualShock.
+constexpr std::uint32_t pad_struct_comb_count_offset = 0xE3U;
+constexpr std::uint32_t pad_struct_actuator_count_offset = 0xE4U;
+// +0xE6: mode-switch mask (PadInfoMode info 1), 0x73 for a DualShock in
+// digital mode. +0xE8: current mode id, 0x41 (digital).
+constexpr std::uint32_t pad_struct_mode_switch_mask_offset = 0xE6U;
+constexpr std::uint32_t pad_struct_current_mode_offset = 0xE8U;
+// +0xE9/+0xEA: per-combo actuator layout, one combo of two actuators.
+constexpr std::uint32_t pad_struct_comb_entry_count_offset = 0xE9U;
+constexpr std::uint32_t pad_struct_actuators_per_comb_offset = 0xEAU;
+constexpr std::uint8_t pad_struct_ready_state = 6U;
+constexpr std::uint8_t pad_struct_ready_mode = 0xFEU;
+constexpr std::uint8_t pad_struct_comb_count = 1U;
+constexpr std::uint8_t pad_struct_actuator_count = 2U;
+constexpr std::uint16_t pad_struct_mode_switch_mask = 0x73U;
+constexpr std::uint8_t pad_struct_current_mode = 0x41U;
+constexpr std::uint8_t pad_struct_comb_entry_count = 1U;
+constexpr std::uint8_t pad_struct_actuators_per_comb = 2U;
 constexpr std::uint32_t host_menu_push_address = 0x80010D08U;
 constexpr std::uint32_t host_menu_screen_alias_address = 0x80010E0CU;
 constexpr std::uint32_t host_menu_id_restore_address = 0x80010E18U;
@@ -317,6 +349,40 @@ bool RetailHle::onVBlank(psx::R3000Runtime& runtime) {
             pad_one_buffer_address + 3U,
             static_cast<std::uint8_t>(pad_one_buttons_ >> 8U)) ||
         !runtime.write8(pad_two_buffer_address, 0xFFU)) {
+        return false;
+    }
+    // Publish the DualShock capability state the retail pad driver would have
+    // reached through its SIO detection state machine. These fields are the
+    // inputs to PadGetState and PadInfoMode, so the game enables its Options
+    // vibration toggle and permits its shake code. Written every VBlank so a
+    // PadInitDirect struct reset is re-applied before any retail pad check.
+    // Port two keeps its BSS-disconnected state.
+    if (pad_one_connected_ &&
+        (!runtime.write8(
+             pad_struct_port_zero_address + pad_struct_state_offset,
+             pad_struct_ready_state) ||
+         !runtime.write8(
+             pad_struct_port_zero_address + pad_struct_mode_offset,
+             pad_struct_ready_mode) ||
+         !runtime.write8(
+             pad_struct_port_zero_address + pad_struct_comb_count_offset,
+             pad_struct_comb_count) ||
+         !runtime.write8(
+             pad_struct_port_zero_address + pad_struct_actuator_count_offset,
+             pad_struct_actuator_count) ||
+         !runtime.write16(
+             pad_struct_port_zero_address + pad_struct_mode_switch_mask_offset,
+             pad_struct_mode_switch_mask) ||
+         !runtime.write8(
+             pad_struct_port_zero_address + pad_struct_current_mode_offset,
+             pad_struct_current_mode) ||
+         !runtime.write8(
+             pad_struct_port_zero_address + pad_struct_comb_entry_count_offset,
+             pad_struct_comb_entry_count) ||
+         !runtime.write8(
+             pad_struct_port_zero_address +
+                 pad_struct_actuators_per_comb_offset,
+             pad_struct_actuators_per_comb))) {
         return false;
     }
     ++vblank_count_;

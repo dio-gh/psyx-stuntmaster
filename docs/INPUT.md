@@ -51,8 +51,11 @@ left_x left_y right_x right_y
 ```
 
 `input.example.ini` is the canonical complete example. PsyCross's standard SDL
-controller mapping supplies the default gamepad layout. Port two, analog-mode
-switching, vibration, and a graphical rebinding UI are deferred.
+controller mapping supplies the default gamepad layout. The host reports port
+one to the retail pad driver as a connected DualShock, so the game's Options
+vibration toggle and shake code run; the retail motor values drive
+`SDL_GameControllerRumble` on the first attached game controller. Port two,
+analog-mode switching, and a graphical rebinding UI are deferred.
 
 Window and render size are independent of bindings. The default 1280x720
 window contains a 960x720 original-4:3 target. `--render-size WIDTHxHEIGHT`

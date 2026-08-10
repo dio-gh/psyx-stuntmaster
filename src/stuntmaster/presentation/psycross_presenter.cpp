@@ -580,6 +580,10 @@ PsyCrossPresenter::PsyCrossPresenter(
 PsyCrossPresenter::~PsyCrossPresenter() {
     if (initialized_) {
         PadStopCom();
+        if (rumble_controller_ != nullptr) {
+            SDL_GameControllerClose(rumble_controller_);
+            rumble_controller_ = nullptr;
+        }
         PsyX_Shutdown();
     }
 }
@@ -675,6 +679,49 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     }
     previous_trace_buttons_ = buttons;
     return buttons;
+}
+
+void PsyCrossPresenter::applyRumble(
+    std::uint8_t motor1,
+    std::uint8_t motor2,
+    std::uint32_t duration_ms) {
+    const auto active = duration_ms != 0U && (motor1 != 0U || motor2 != 0U);
+    if (!active) {
+        if (rumble_active_ && rumble_controller_ != nullptr) {
+            SDL_GameControllerRumble(rumble_controller_, 0, 0, 0);
+        }
+        rumble_active_ = false;
+        return;
+    }
+    if (rumble_controller_ == nullptr ||
+        !SDL_GameControllerGetAttached(rumble_controller_)) {
+        if (rumble_controller_ != nullptr) {
+            SDL_GameControllerClose(rumble_controller_);
+            rumble_controller_ = nullptr;
+        }
+        for (int index = 0; index < SDL_NumJoysticks(); ++index) {
+            if (SDL_IsGameController(index)) {
+                rumble_controller_ = SDL_GameControllerOpen(index);
+                break;
+            }
+        }
+    }
+    if (rumble_controller_ == nullptr) {
+        rumble_active_ = false;
+        return;
+    }
+    // DualShock actuator 1 is the big low-frequency motor and actuator 2 the
+    // small high-frequency one; SDL's Rumble arguments are in the same
+    // [low, high] order. Scale the retail 0..255 bytes to SDL's 0..65535
+    // magnitude. SDL_GameControllerRumble needs no SDL haptics subsystem: on
+    // Windows it drives XInput controllers directly.
+    constexpr std::uint16_t rumble_scale = 257U;
+    SDL_GameControllerRumble(
+        rumble_controller_,
+        static_cast<std::uint16_t>(motor1) * rumble_scale,
+        static_cast<std::uint16_t>(motor2) * rumble_scale,
+        duration_ms);
+    rumble_active_ = true;
 }
 
 void PsyCrossPresenter::setDebugOverlay(DebugOverlayState state) noexcept {

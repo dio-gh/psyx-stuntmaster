@@ -1852,6 +1852,38 @@ void retailVSyncHle() {
     assert(pad_buttons_first == 0xFFU);
     assert(pad_buttons_second == 0xFFU);
 
+    // The host publishes the retail libpad's DualShock state so the game's
+    // PadGetState(0) == 6 checks (Options vibration toggle, shake function,
+    // countdown pump) see a vibration-capable pad. Port two stays
+    // disconnected.
+    std::uint8_t pad_state{};
+    std::uint8_t pad_mode{};
+    std::uint8_t pad_comb_count{};
+    std::uint8_t pad_actuator_count{};
+    std::uint16_t pad_mode_switch_mask{};
+    std::uint8_t pad_current_mode{};
+    std::uint8_t pad_comb_entry_count{};
+    std::uint8_t pad_actuators_per_comb{};
+    assert(runtime.read8(0x800E2945U, pad_state));
+    assert(runtime.read8(0x800E2942U, pad_mode));
+    assert(runtime.read8(0x800E29DFU, pad_comb_count));
+    assert(runtime.read8(0x800E29E0U, pad_actuator_count));
+    assert(runtime.read16(0x800E29E2U, pad_mode_switch_mask));
+    assert(runtime.read8(0x800E29E4U, pad_current_mode));
+    assert(runtime.read8(0x800E29E5U, pad_comb_entry_count));
+    assert(runtime.read8(0x800E29E6U, pad_actuators_per_comb));
+    assert(pad_state == 6U);
+    assert(pad_mode == 0xFEU);
+    assert(pad_comb_count == 1U);
+    assert(pad_actuator_count == 2U);
+    assert(pad_mode_switch_mask == 0x73U);
+    assert(pad_current_mode == 0x41U);
+    assert(pad_comb_entry_count == 1U);
+    assert(pad_actuators_per_comb == 2U);
+    std::uint8_t pad_two_state{};
+    assert(runtime.read8(0x800E2A35U, pad_two_state));
+    assert(pad_two_state == 0U);
+
     const auto retail_active_high = [&]() {
         return static_cast<std::uint16_t>(~(
             static_cast<std::uint16_t>(pad_buttons_first) << 8U |

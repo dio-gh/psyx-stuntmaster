@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-08-09.
+Last updated: 2026-08-10.
 
 ## Snapshot
 
@@ -21,7 +21,7 @@ speed-preserving high-frequency guest update, now tunable to any multiple of
 | Disc and executable | Working | Exact `SLUS-00684` BIN/CUE and boot executable fingerprints are enforced. |
 | CPU, GTE, BIOS HLE | Working on tested route | Retail startup, overlays, title, and early gameplay execute. Unsupported services are added when a trace reaches them. |
 | CD and DMA | Working on tested route | Raw MODE2/2352 reads, ISO9660, DMA2/4/6, and optional drive-rate completion pacing are implemented. |
-| Input | Working | Remappable SDL keyboard/gamepad input reaches the retail PAD buffer. |
+| Input | Working | Remappable SDL keyboard/gamepad input reaches the retail PAD buffer; the host reports port one as a DualShock so the retail vibration gates open, and the game's motor values drive `SDL_GameControllerRumble` on the first attached gamepad. |
 | PsyCross presentation | Default, working | Title, first level, textures, HUD, pause overlay, widescreen view, and high-rate presentation have been live-validated. |
 | Audio | Working | Register-level SPU, DMA sample upload, ADPCM voices, streaming music interrupts, ADSR, reverb, OpenAL output, WAV capture, and native-movie audio hand-off are implemented. |
 | FMV | Working on tested route | FFmpeg decodes raw-disc STR/MDEC video and XA-ADPCM audio on the main thread. Start skips the active movie; movie hand-offs suppress stale splash frames and have been live-validated; headless and decode-failure paths retain the caller-gated skip. |
@@ -153,6 +153,14 @@ The following flags are diagnostic or experimental, not recommended defaults:
 - The guest is the only authority for gameplay, AI, physics, animation,
   collision, timers, scripting, and RNG. Host interpolation never feeds back
   into guest state.
+- The game links its own Sony libpad copy whose detection state machine runs
+  in the SIO interrupt handler. The host emulates neither the SIO port nor its
+  interrupts, so the host publishes the DualShock struct state (state 6,
+  `PadGetState(0) == 6`) and capability fields at every VBlank instead. The
+  game's motor table (`0x800DD6AC` big, `0x800DD6AD` small, countdown
+  `0x800DC9D8`) is read per VBlank and applied with `SDL_GameControllerRumble`
+  on the main thread; no SDL haptics subsystem is required. See the vibration
+  section of `docs/re/README.md`.
 - Retail updates gameplay at 30 Hz by holding a render-queue swap for two
   VBlanks. This is a fixed-step engine; it has no global time-step scalar.
 - The game loop is the emulated display rate divided by that swap gate, and the

@@ -12,6 +12,9 @@
 #include <utility>
 #include <vector>
 
+// Matches SDL's own global typedef; keeps SDL.h out of this header.
+typedef struct _SDL_GameController SDL_GameController;
+
 namespace stuntmaster::presentation {
 
 struct GpuReplaySegment {
@@ -41,6 +44,15 @@ public:
     PsyCrossPresenter& operator=(const PsyCrossPresenter&) = delete;
 
     [[nodiscard]] std::uint16_t pollPadOneButtons();
+    // Drive the first attached SDL game controller's rumble motors. `motor1`
+    // is the DualShock big/low-frequency actuator and `motor2` the
+    // small/high-frequency one, matching the retail actuator table order.
+    // `duration_ms` is the guest shake duration; zero stops the rumble.
+    // Main thread only (SDL controller access).
+    void applyRumble(
+        std::uint8_t motor1,
+        std::uint8_t motor2,
+        std::uint32_t duration_ms);
     [[nodiscard]] bool takeQuickSaveRequest() noexcept {
         return std::exchange(quick_save_requested_, false);
     }
@@ -218,6 +230,8 @@ private:
     std::deque<DiagnosticFrame> diagnostic_frames_;
     std::array<unsigned char, 34> pad_one_{};
     std::array<unsigned char, 34> pad_two_{};
+    SDL_GameController* rumble_controller_{};
+    bool rumble_active_{};
 };
 
 } // namespace stuntmaster::presentation
