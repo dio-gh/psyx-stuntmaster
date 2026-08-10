@@ -24,6 +24,17 @@ if ($pathKeys.Count -gt 1) {
 }
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$git = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
+if (-not $git) {
+    throw 'Git was not found; it is required to derive the reproducible source timestamp.'
+}
+$sourceDateEpoch = (& $git -C $RepoRoot show -s --format=%ct HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceDateEpoch -notmatch '^\d+$') {
+    throw "Could not determine SOURCE_DATE_EPOCH from the source commit."
+}
+$env:SOURCE_DATE_EPOCH = $sourceDateEpoch
+Write-Host "Reproducible source timestamp: $sourceDateEpoch"
+
 $Configuration = switch ($Configuration.ToLowerInvariant()) {
     'debug' { 'Debug' }
     'release' { 'Release' }
@@ -156,10 +167,6 @@ if ($CoreOnly) {
 } else {
     $submoduleCmake = Join-Path $RepoRoot 'external\PsyCross\CMakeLists.txt'
     if (-not (Test-Path -LiteralPath $submoduleCmake -PathType Leaf)) {
-        $git = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
-        if (-not $git) {
-            throw 'Git was not found and the PsyCross submodule is not initialized.'
-        }
         Write-Host 'Initializing the PsyCross submodule...'
         Invoke-Native $git '-C' $RepoRoot 'submodule' 'update' '--init' `
             '--recursive'
@@ -172,7 +179,8 @@ if ($CoreOnly) {
     $ffmpegRoot = Get-PrebuiltFfmpeg
     $configure += @(
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
-        '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
+        "-DVCPKG_OVERLAY_TRIPLETS=$RepoRoot\triplets",
+        '-DVCPKG_TARGET_TRIPLET=x64-windows-static-release',
         '-DVCPKG_MANIFEST_INSTALL=ON',
         '-DSTUNTMASTER_ENABLE_PSYCROSS=ON',
         "-DSTUNTMASTER_FFMPEG_ROOT=$ffmpegRoot"

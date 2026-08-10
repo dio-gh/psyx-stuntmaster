@@ -1,0 +1,171 @@
+name: Draft release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: draft-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote tested artifact to draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+
+    steps:
+      - name: Find a successful build of the tagged commit
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            while IFS= read -r run_id; do
+              [[ -n "$run_id" ]] || continue
+              artifacts_json="$(
+                gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts"
+              )"
+              mapfile -t matches < <(
+                jq -r --arg suffix "-$SOURCE_SHA" '
+                  .artifacts[] |
+                  select(.expired == false) |
+                  select(.name | startswith("stuntmaster-pc-windows-x64-")) |
+                  select(.name | endswith($suffix)) |
+                  [.id, .name] | @tsv
+                ' <<<"$artifacts_json"
+              )
+              if (( ${#matches[@]} > 1 )); then
+                echo "Run $run_id has multiple matching release artifacts." >&2
+                exit 1
+              fi
+              if (( ${#matches[@]} == 1 )); then
+                IFS=$'\t' read -r artifact_id artifact_name <<<"${matches[0]}"
+                echo "build_run_id=$run_id" >> "$GITHUB_OUTPUT"
+                echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+                echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+                echo "Using artifact $artifact_name from successful run $run_id."
+                exit 0
+              fi
+            done < <(
+              gh api --method GET \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/windows-build.yml/runs" \
+                -f head_sha="$SOURCE_SHA" \
+                -f status=success \
+                -f per_page=100 \
+                --jq '.workflow_runs[] | select(.event != "pull_request") | .id'
+            )
+            if (( attempt == 60 )); then
+              break
+            fi
+            echo "No completed artifact for $SOURCE_SHA yet; retrying in 30 seconds."
+            sleep 30
+          done
+          echo "No successful, unexpired Windows build artifact exists for $SOURCE_SHA." >&2
+          echo "Run the Windows build workflow for this ref, then rerun this workflow." >&2
+          exit 1
+
+      - name: Download the tested release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.artifact.outputs.artifact_name }}
+          BUILD_RUN_ID: ${{ steps.artifact.outputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir release-assets
+
+      - name: Verify release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(release-assets/stuntmaster-pc-*-windows-x64.zip)
+          files=(release-assets/*)
+          if (( ${#archives[@]} != 1 )); then
+            echo "Expected exactly one release ZIP, found ${#archives[@]}." >&2
+            exit 1
+          fi
+          archive="${archives[0]}"
+          expected=(
+            "$archive"
+            "$archive.sha256"
+            "$archive.contents.txt"
+            "$archive.spdx.json"
+            "$archive.sbom.md"
+            "$archive.sbom.sha256"
+          )
+          if (( ${#files[@]} != ${#expected[@]} )); then
+            echo "Expected exactly ${#expected[@]} release files, found ${#files[@]}." >&2
+            printf '  %s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          for path in "${expected[@]}"; do
+            if [[ ! -f "$path" ]]; then
+              echo "Missing expected release file: $path" >&2
+              exit 1
+            fi
+          done
+          (
+            cd release-assets
+            sha256sum --check ./*.zip.sha256
+            sha256sum --check ./*.sbom.sha256
+          )
+          if ! gh attestation verify "$archive" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/windows-build.yml" \
+              --signer-digest "$GITHUB_SHA" \
+              --source-digest "$GITHUB_SHA" \
+              --predicate-type https://spdx.dev/Document/v2.3 \
+              --deny-self-hosted-runners \
+              --format json | jq -e --slurpfile expected "$archive.spdx.json" \
+                'any(.[]; .verificationResult.statement.predicate == $expected[0])' \
+                >/dev/null; then
+            echo "No verified SPDX predicate exactly matches $archive.spdx.json." >&2
+            exit 1
+          fi
+          for path in "${expected[@]}"; do
+            gh attestation verify "$path" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/windows-build.yml" \
+              --signer-digest "$GITHUB_SHA" \
+              --source-digest "$GITHUB_SHA" \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --deny-self-hosted-runners
+          done
+
+      - name: Create draft release for the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A GitHub Release already exists for tag $RELEASE_TAG; refusing to replace it." >&2
+            exit 1
+          fi
+          shopt -s nullglob
+          assets=(release-assets/*)
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --notes "Automated draft for tag $RELEASE_TAG. Review the attached build, replace these notes, choose the appropriate release classification, and publish when ready."

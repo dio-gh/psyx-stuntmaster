@@ -2,6 +2,8 @@ name: Windows build
 
 on:
   push:
+    branches:
+      - '**'
   pull_request:
   workflow_dispatch:
 
@@ -17,6 +19,10 @@ jobs:
     name: Build, test, and package
     runs-on: windows-2022
     timeout-minutes: 90
+    outputs:
+      artifact_name: ${{ steps.release_metadata.outputs.artifact_name }}
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\build\vcpkg-binary-cache,readwrite
 
     steps:
       - name: Check out source and pinned submodules
@@ -40,45 +46,431 @@ jobs:
           if ($actualPsyCross -ne $expectedPsyCross) {
             throw "Unexpected PsyCross revision: $actualPsyCross"
           }
+          $cmake = Get-Content -LiteralPath CMakeLists.txt -Raw
+          if ($cmake -notmatch 'project\(stuntmaster_pc\s+VERSION\s+([^\s\)]+)') {
+            throw 'Could not determine the project version from CMakeLists.txt.'
+          }
+          $projectVersion = $Matches[1]
+          $manifestVersion = (Get-Content -LiteralPath vcpkg.json -Raw | ConvertFrom-Json).'version-string'
+          if ($manifestVersion -ne $projectVersion) {
+            throw "CMake version $projectVersion does not match vcpkg version $manifestVersion."
+          }
+          Write-Host "Project version: $projectVersion"
           git submodule status --recursive
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/vcpkg-binary-cache
+          key: vcpkg-${{ runner.os }}-vs2022-x64-static-release-${{ hashFiles('vcpkg.json', 'triplets/x64-windows-static-release.cmake') }}
 
       - name: Build, test, and package Release
         shell: pwsh
         run: ./tools/package_windows.ps1
 
-      - name: Inspect and hash artifact
+      - name: Capture deterministic build environment
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archive = Get-Item -LiteralPath 'dist/stuntmaster-pc-0.0.1-windows-x64.zip'
+          $cachePath = 'build/windows/CMakeCache.txt'
+          $cache = Get-Content -LiteralPath $cachePath -Raw
+          function Get-CacheValue {
+            param([Parameter(Mandatory = $true)][string] $Name)
+            $pattern = '(?m)^{0}:[^=]*=(.*)$' -f [regex]::Escape($Name)
+            $match = [regex]::Match($cache, $pattern)
+            if (-not $match.Success) {
+              throw "CMake cache value was not found: $Name"
+            }
+            return $match.Groups[1].Value.Trim()
+          }
+          function Get-CMakeSetValue {
+            param(
+              [Parameter(Mandatory = $true)][string] $Content,
+              [Parameter(Mandatory = $true)][string] $Name
+            )
+            $pattern = '(?m)^set\({0}\s+"?([^"\)\r\n]+)"?\)' -f [regex]::Escape($Name)
+            $match = [regex]::Match($Content, $pattern)
+            if (-not $match.Success) {
+              throw "CMake compiler value was not found: $Name"
+            }
+            return $match.Groups[1].Value.Trim()
+          }
+          function Get-UniqueProjectValue {
+            param([Parameter(Mandatory = $true)][string] $Element)
+            $values = @(Get-ChildItem -LiteralPath 'build/windows' -Recurse `
+              -Filter '*.vcxproj' -File | ForEach-Object {
+                $content = Get-Content -LiteralPath $_.FullName -Raw
+                foreach ($match in [regex]::Matches(
+                    $content,
+                    '<{0}>([^<]+)</{0}>' -f [regex]::Escape($Element))) {
+                  $match.Groups[1].Value.Trim()
+                }
+              } | Sort-Object -Unique)
+            if ($values.Count -ne 1) {
+              throw "Expected one $Element value in generated projects, found $($values.Count): $($values -join ', ')"
+            }
+            return $values[0]
+          }
+          function Get-ToolEvidence {
+            param(
+              [Parameter(Mandatory = $true)][string] $Name,
+              [Parameter(Mandatory = $true)][string] $Path,
+              [switch] $RequireMicrosoftSignature
+            )
+            $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+            $hash = (Get-FileHash -LiteralPath $resolvedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $signature = Get-AuthenticodeSignature -FilePath $resolvedPath
+            $status = $signature.Status.ToString()
+            if ($status -notin @('Valid', 'NotSigned')) {
+              throw "Invalid Authenticode status for ${Name}: $status"
+            }
+            $signerSubject = if ($null -ne $signature.SignerCertificate) {
+              [string]$signature.SignerCertificate.Subject
+            } else { 'NONE' }
+            $signerThumbprint = if ($null -ne $signature.SignerCertificate) {
+              [string]$signature.SignerCertificate.Thumbprint
+            } else { 'NONE' }
+            $timestampSubject = if ($null -ne $signature.TimeStamperCertificate) {
+              [string]$signature.TimeStamperCertificate.Subject
+            } else { 'NONE' }
+            $timestampThumbprint = if ($null -ne $signature.TimeStamperCertificate) {
+              [string]$signature.TimeStamperCertificate.Thumbprint
+            } else { 'NONE' }
+            if ($RequireMicrosoftSignature) {
+              if ($status -ne 'Valid') {
+                throw "$Name must have a valid Microsoft Authenticode signature."
+              }
+              if ($signerSubject -notmatch '(?i)(^|,\s*)O=Microsoft Corporation(,|$)') {
+                throw "Unexpected Authenticode publisher for ${Name}: $signerSubject"
+              }
+            }
+            return [pscustomobject][ordered]@{
+              name = $Name
+              file_name = [IO.Path]::GetFileName($resolvedPath)
+              sha256 = $hash
+              authenticode_status = $status
+              signature_required = [bool]$RequireMicrosoftSignature
+              signer_subject = $signerSubject
+              signer_certificate_sha1 = $signerThumbprint.ToLowerInvariant()
+              timestamp_signer_subject = $timestampSubject
+              timestamp_certificate_sha1 = $timestampThumbprint.ToLowerInvariant()
+            }
+          }
+          function Get-Sha256String {
+            param([Parameter(Mandatory = $true)][string] $Value)
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            try {
+              $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Value)
+              return ([BitConverter]::ToString(
+                $algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+            } finally {
+              $algorithm.Dispose()
+            }
+          }
+          $compilerFiles = @(Get-ChildItem -LiteralPath 'build/windows/CMakeFiles' `
+            -Recurse -Filter 'CMakeCXXCompiler.cmake' -File | Where-Object {
+              (Get-Content -LiteralPath $_.FullName -Raw) -match 'CMAKE_CXX_COMPILER_VERSION'
+            })
+          if ($compilerFiles.Count -ne 1) {
+            throw "Expected one CMake C++ compiler metadata file, found $($compilerFiles.Count)."
+          }
+          $compiler = Get-Content -LiteralPath $compilerFiles[0].FullName -Raw
+          $compilerPath = Get-CMakeSetValue $compiler 'CMAKE_CXX_COMPILER'
+          $toolsMatch = [regex]::Match(
+            $compilerPath,
+            '(?i)[/\\]MSVC[/\\]([^/\\]+)[/\\]bin[/\\]')
+          if (-not $toolsMatch.Success) {
+            throw "Could not determine the MSVC tools version from $compilerPath"
+          }
+          $msvcToolsVersion = $toolsMatch.Groups[1].Value
+          $vsRootMatch = [regex]::Match(
+            $compilerPath,
+            '(?i)^(.*?)[/\\]VC[/\\]Tools[/\\]MSVC[/\\]')
+          if (-not $vsRootMatch.Success) {
+            throw "Could not determine the Visual Studio root from $compilerPath"
+          }
+          $visualStudioRoot = $vsRootMatch.Groups[1].Value
+          $compilerDirectory = Split-Path -Parent $compilerPath
+          $cmakeCommand = Get-CacheValue 'CMAKE_COMMAND'
+          $cmakeVersion = ((& $cmakeCommand --version | Select-Object -First 1) `
+            -replace '^cmake version\s+', '').Trim()
+          $gitVersion = ((git --version) -replace '^git version\s+', '').Trim()
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudioVersion = ([string](& $vswhere -latest -products '*' `
+            -property installationVersion | Select-Object -Last 1)).Trim()
+          if (-not $visualStudioVersion) {
+            throw 'Could not determine the Visual Studio installation version.'
+          }
+          $sourceDateEpoch = ([string](git show -s --format=%ct $env:GITHUB_SHA)).Trim()
+          if ($sourceDateEpoch -notmatch '^\d+$') {
+            throw 'Could not determine SOURCE_DATE_EPOCH.'
+          }
+          $manifest = Get-Content -LiteralPath vcpkg.json -Raw | ConvertFrom-Json
+          $windowsSdkVersion = Get-UniqueProjectValue 'WindowsTargetPlatformVersion'
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} `
+            "Windows Kits\10\bin\$windowsSdkVersion\x64"
+          $resourceCompiler = Join-Path $sdkBin 'rc.exe'
+          $msbuildMetadata = `
+            'build/windows/CMakeFiles/StuntmasterMSBuildCommand.txt'
+          if (-not (Test-Path -LiteralPath $msbuildMetadata -PathType Leaf)) {
+            throw 'CMake did not record its selected MSBuild executable.'
+          }
+          $msbuild = (Get-Content -LiteralPath $msbuildMetadata -Raw).Trim()
+          if (-not $msbuild) {
+            throw 'CMake recorded an empty MSBuild executable path.'
+          }
+          $vcpkg = Join-Path $visualStudioRoot 'VC\vcpkg\vcpkg.exe'
+          $cmakeBin = Split-Path -Parent $cmakeCommand
+          $git = (Get-Command git.exe -ErrorAction Stop).Source
+          $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $toolchainTools = @(
+            Get-ToolEvidence 'MSVC C/C++ compiler' $compilerPath -RequireMicrosoftSignature
+            Get-ToolEvidence 'MSVC linker' (Join-Path $compilerDirectory 'link.exe') -RequireMicrosoftSignature
+            Get-ToolEvidence 'MSVC librarian' (Join-Path $compilerDirectory 'lib.exe') -RequireMicrosoftSignature
+            Get-ToolEvidence 'MSBuild' $msbuild -RequireMicrosoftSignature
+            Get-ToolEvidence 'Windows resource compiler' $resourceCompiler -RequireMicrosoftSignature
+            Get-ToolEvidence 'Windows manifest tool' (Join-Path $sdkBin 'mt.exe') -RequireMicrosoftSignature
+            Get-ToolEvidence 'CMake' $cmakeCommand
+            Get-ToolEvidence 'CTest' (Join-Path $cmakeBin 'ctest.exe')
+            Get-ToolEvidence 'CPack' (Join-Path $cmakeBin 'cpack.exe')
+            Get-ToolEvidence 'vcpkg' $vcpkg
+            Get-ToolEvidence 'Git' $git
+            Get-ToolEvidence 'PowerShell' $pwsh
+          )
+          $toolchainJson = $toolchainTools | ConvertTo-Json -Depth 6 -Compress
+          $toolchainDigest = Get-Sha256String $toolchainJson
+          $buildEnvironment = [ordered]@{
+            schema_version = '2'
+            build_system = 'GitHub Actions'
+            runner_image = 'windows-2022'
+            runner_image_os = [string]$env:ImageOS
+            runner_image_version = [string]$env:ImageVersion
+            runner_architecture = [string]$env:RUNNER_ARCH
+            visual_studio_version = $visualStudioVersion
+            msvc_compiler_id = Get-CMakeSetValue $compiler 'CMAKE_CXX_COMPILER_ID'
+            msvc_compiler_version = Get-CMakeSetValue $compiler 'CMAKE_CXX_COMPILER_VERSION'
+            msvc_toolset = Get-UniqueProjectValue 'PlatformToolset'
+            msvc_toolset_version = $msvcToolsVersion
+            windows_sdk_version = $windowsSdkVersion
+            cmake_version = $cmakeVersion
+            cmake_generator = Get-CacheValue 'CMAKE_GENERATOR'
+            cmake_generator_platform = Get-CacheValue 'CMAKE_GENERATOR_PLATFORM'
+            git_version = $gitVersion
+            build_configuration = 'Release'
+            vcpkg_triplet = 'x64-windows-static-release'
+            vcpkg_builtin_baseline = [string]$manifest.'builtin-baseline'
+            source_date_epoch = $sourceDateEpoch
+            reproducibility_options = 'MSVC /Brepro; commit-derived ZIP timestamps and SBOM creation time'
+            toolchain_digest_algorithm = 'SHA256'
+            toolchain_digest_format = 'UTF-8 compact JSON toolchain_tools array in listed and property order'
+            toolchain_digest = $toolchainDigest
+            toolchain_tools = $toolchainTools
+          }
+          foreach ($property in $buildEnvironment.GetEnumerator()) {
+            if (-not [string]$property.Value) {
+              throw "Build environment value is empty: $($property.Key)"
+            }
+          }
+          $environmentPath = Join-Path (Resolve-Path dist).Path 'build-environment.json'
+          [IO.File]::WriteAllText(
+            $environmentPath,
+            ($buildEnvironment | ConvertTo-Json -Depth 4),
+            [Text.UTF8Encoding]::new($false))
+          "BUILD_ENVIRONMENT=$environmentPath" >> $env:GITHUB_ENV
+          Get-Content -LiteralPath $environmentPath
+
+      - name: Inspect and hash artifact
+        id: release_metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archives = @(Get-ChildItem -LiteralPath dist -Filter 'stuntmaster-pc-*-windows-x64.zip' -File)
+          if ($archives.Count -ne 1) {
+            throw "Expected exactly one release archive, found $($archives.Count)."
+          }
+          $archive = $archives[0]
+          $match = [regex]::Match($archive.Name, '^stuntmaster-pc-(?<version>.+)-windows-x64\.zip$')
+          if (-not $match.Success) {
+            throw "Could not extract the project version from $($archive.Name)."
+          }
+          $contentsPath = "$($archive.FullName).contents.txt"
+          $checksumPath = "$($archive.FullName).sha256"
+          $sbomPath = "$($archive.FullName).spdx.json"
+          $sbomSummaryPath = "$($archive.FullName).sbom.md"
+          $sbomChecksumPath = "$($archive.FullName).sbom.sha256"
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
           try {
             $entries = @($zip.Entries | Sort-Object FullName)
             $entries | ForEach-Object {
               '{0,12}  {1}' -f $_.Length, $_.FullName
-            } | Tee-Object -FilePath 'dist/stuntmaster-pc-0.0.1-windows-x64.contents.txt'
-            $forbidden = @($entries | Where-Object {
-              $_.FullName -match '(?i)\.(bin|cue|iso|img|chd|mcr|dmp|log)$'
+            } | Tee-Object -FilePath $contentsPath
+            $archiveRoot = "$($archive.BaseName)/"
+            $allowedRootFiles = @(
+              'stuntmaster.exe',
+              'stuntmaster-launcher.exe',
+              'input.ini',
+              'README-FIRST.txt',
+              'README.md',
+              'LICENSE',
+              'THIRD_PARTY.md'
+            )
+            $allowedLicenses = @(
+              'licenses/FFmpeg-LGPL-3.0.txt',
+              'licenses/fmt.txt',
+              'licenses/OpenAL-Soft.txt',
+              'licenses/SDL2.txt'
+            )
+            $unexpected = @($entries | Where-Object {
+              $name = $_.FullName
+              if ($name.Contains('\') -or
+                  -not $name.StartsWith($archiveRoot, [StringComparison]::Ordinal)) {
+                return $true
+              }
+              $relative = $name.Substring($archiveRoot.Length)
+              if ($relative -match '(^|/)\.{1,2}(/|$)') {
+                return $true
+              }
+              if (-not $_.Name) {
+                return -not ($relative -eq '' -or
+                  $relative -eq 'licenses/' -or
+                  $relative -match '^docs/(?:[^/]+/)*$')
+              }
+              return -not (
+                $relative -in $allowedRootFiles -or
+                $relative -in $allowedLicenses -or
+                $relative -match '^(avcodec|avformat|avutil|swresample|swscale)-[0-9]+\.dll$' -or
+                $relative -match '^docs/(?:[^/]+/)*[^/]+\.md$'
+              )
             })
-            if ($forbidden.Count -ne 0) {
-              throw "Release archive contains forbidden runtime or game data."
+            if ($unexpected.Count -ne 0) {
+              $names = $unexpected.FullName -join ', '
+              throw "Release archive contains unexpected paths: $names"
             }
           } finally {
             $zip.Dispose()
           }
           $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($archive.Name)" | Set-Content -LiteralPath "$($archive.FullName).sha256" -Encoding ascii
+          "$hash  $($archive.Name)" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+          "RELEASE_ARCHIVE=$($archive.FullName)" >> $env:GITHUB_ENV
+          "RELEASE_CONTENTS=$contentsPath" >> $env:GITHUB_ENV
+          "RELEASE_CHECKSUM=$checksumPath" >> $env:GITHUB_ENV
+          "RELEASE_SBOM=$sbomPath" >> $env:GITHUB_ENV
+          "RELEASE_SBOM_SUMMARY=$sbomSummaryPath" >> $env:GITHUB_ENV
+          "RELEASE_SBOM_CHECKSUM=$sbomChecksumPath" >> $env:GITHUB_ENV
+          "RELEASE_VERSION=$($match.Groups['version'].Value)" >> $env:GITHUB_ENV
+          $artifactName = "stuntmaster-pc-windows-x64-$($match.Groups['version'].Value)-$env:GITHUB_SHA"
+          "artifact_name=$artifactName" >> $env:GITHUB_OUTPUT
           Write-Host "SHA-256: $hash"
+
+      - name: Generate SPDX SBOM
+        shell: pwsh
+        run: |
+          ./tools/generate_sbom.ps1 `
+            -Archive $env:RELEASE_ARCHIVE `
+            -OutputPath $env:RELEASE_SBOM `
+            -SourceCommit $env:GITHUB_SHA `
+            -SourceRepository $env:GITHUB_REPOSITORY `
+            -BuildEnvironmentPath $env:BUILD_ENVIRONMENT `
+            -SummaryPath $env:RELEASE_SBOM_SUMMARY
+          $sbomHash = (Get-FileHash -LiteralPath $env:RELEASE_SBOM -Algorithm SHA256).Hash.ToLowerInvariant()
+          $summaryHash = (Get-FileHash -LiteralPath $env:RELEASE_SBOM_SUMMARY -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "$sbomHash  $([IO.Path]::GetFileName($env:RELEASE_SBOM))"
+            "$summaryHash  $([IO.Path]::GetFileName($env:RELEASE_SBOM_SUMMARY))"
+          ) | Set-Content -LiteralPath $env:RELEASE_SBOM_CHECKSUM -Encoding ascii
+          Write-Host "SBOM SHA-256: $sbomHash"
+          Write-Host "Human-readable SBOM SHA-256: $summaryHash"
 
       - name: Upload independently built package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: stuntmaster-pc-windows-x64-${{ github.sha }}
+          name: ${{ steps.release_metadata.outputs.artifact_name }}
           path: |
-            dist/stuntmaster-pc-0.0.1-windows-x64.zip
-            dist/stuntmaster-pc-0.0.1-windows-x64.zip.sha256
-            dist/stuntmaster-pc-0.0.1-windows-x64.contents.txt
+            ${{ env.RELEASE_ARCHIVE }}
+            ${{ env.RELEASE_CHECKSUM }}
+            ${{ env.RELEASE_CONTENTS }}
+            ${{ env.RELEASE_SBOM }}
+            ${{ env.RELEASE_SBOM_SUMMARY }}
+            ${{ env.RELEASE_SBOM_CHECKSUM }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
+          retention-days: 30
+
+  attest:
+    name: Attest release ZIP and SBOM
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download the completed build artifact
+        env:
+          ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir attestation-input
+
+      - name: Verify and locate attestation inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(attestation-input/stuntmaster-pc-*-windows-x64.zip)
+          files=(attestation-input/*)
+          if (( ${#archives[@]} != 1 )); then
+            echo "Expected exactly one release ZIP, found ${#archives[@]}." >&2
+            exit 1
+          fi
+          archive="${archives[0]}"
+          expected=(
+            "$archive"
+            "$archive.sha256"
+            "$archive.contents.txt"
+            "$archive.spdx.json"
+            "$archive.sbom.md"
+            "$archive.sbom.sha256"
+          )
+          if (( ${#files[@]} != ${#expected[@]} )); then
+            echo "Expected exactly ${#expected[@]} attestation inputs, found ${#files[@]}." >&2
+            printf '  %s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          for path in "${expected[@]}"; do
+            if [[ ! -f "$path" ]]; then
+              echo "Missing expected attestation input: $path" >&2
+              exit 1
+            fi
+          done
+          (
+            cd attestation-input
+            sha256sum --check ./*.zip.sha256
+            sha256sum --check ./*.sbom.sha256
+          )
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "sbom=$archive.spdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub SBOM attestation
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ steps.inputs.outputs.archive }}
+          sbom-path: ${{ steps.inputs.outputs.sbom }}
+
+      - name: Create GitHub provenance attestation for every published file
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: attestation-input/*

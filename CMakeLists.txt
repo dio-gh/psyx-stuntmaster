@@ -10,6 +10,21 @@ if(MSVC)
     # Redistributable to be installed on the destination machine.
     set(CMAKE_MSVC_RUNTIME_LIBRARY
         "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+    # Remove compiler and linker timestamps from packaged Release binaries.
+    # Among other things, cl.exe's /Brepro handling makes the legacy PsyCross
+    # __DATE__/__TIME__ build banner stable without patching the submodule.
+    add_compile_options(
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/Brepro>")
+    add_link_options("$<$<CONFIG:Release>:/Brepro>")
+
+    # CMAKE_VS_MSBUILD_COMMAND is not a cache entry. Preserve the exact
+    # generator-selected executable for post-build provenance collection.
+    if(CMAKE_VS_MSBUILD_COMMAND)
+        file(WRITE
+            "${CMAKE_BINARY_DIR}/CMakeFiles/StuntmasterMSBuildCommand.txt"
+            "${CMAKE_VS_MSBUILD_COMMAND}\n")
+    endif()
 endif()
 
 add_library(stuntmaster_core
