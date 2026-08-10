@@ -45,8 +45,15 @@ bit `+0x170:3` directly on held updates instead of running the inner
 collision, so the per-authored damage tick does not double) and the 2x push
 speed (OL1 `pushable_collision_hold` gates the displacement + engage counter
 in `Pushable::HandleHumanoidCollision`, which the AS_PushObject exception
-runs every update). Remaining: live behavioural confirmation of the BOL
-entries on a boss route and the two interaction fixes on their repro saves.
+runs every update). A third report — the horizontal pole swing running 2x
+fast at 60 Hz, then flickering between the arc and a sinking position under
+the first (whole-body hold) attempt — is fixed by `pole_swing_timeline`, a
+timeline-only gate at `0x80033078` (see the README section "The player's
+pole swing holds its timeline, not its pose-apply"): the pendulum
+accumulation holds on held updates while the idempotent pose-apply runs every
+update, the same shape as the `Stack` tumble fix. Remaining: live behavioural
+confirmation of the BOL entries on a boss route and the two interaction fixes
+on their repro saves.
 
 ## The pause-menu selected-item blink — reported, root-caused, fixed
 
@@ -128,6 +135,12 @@ Tier 1 notes:
 - `Player+0x268` has three increment sites (1/2/3) plus Dante's `+0x268`
   (9) — a different class at the same offset, so the fingerprint-gated BOL
   hook and the boot hooks are separate.
+- Site 2's whole state function is additionally covered by the
+  `pole_swing_timeline` timeline gate (see the README section "The player's
+  pole swing holds its timeline, not its pose-apply"); with the gate the
+  counter site runs every update (the pose-apply section), so the counter
+  hook's hold on held updates is what keeps the flip-dismount gate on the
+  authored schedule.
 - Sites 1-3 and 7 are hit by any first-level play: a knockdown, a pole
   swing, a slope slide, and a guard pause.
 

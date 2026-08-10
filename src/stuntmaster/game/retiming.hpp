@@ -341,8 +341,10 @@ private:
 // once per guest update, and every other hook in this span reads the resulting
 // `hold()` rather than deciding for itself. The two call-gates (`animLoop`,
 // VRAM flipbooks) skip the gated call on a held update and start it on a
-// counted one; the fullscreen fade keeps its own private accumulator because
-// its render loops run outside `Step__4Time`.
+// counted one; `pole_swing_timeline` holds the horizontal pole-swing's
+// pendulum accumulation while its idempotent pose-apply runs every update (the
+// `Stack`-tumble pattern); the fullscreen fade keeps its own private
+// accumulator because its render loops run outside `Step__4Time`.
 [[nodiscard]] std::span<const RetimeHook> retimeClockHooks() noexcept;
 
 // The always-live boot held-prologue gates: the two world-effect `Update`s,

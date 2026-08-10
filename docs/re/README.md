@@ -831,6 +831,65 @@ Contents that hold at a divided rather than held rate are unchanged by this:
 one-time floor-height init plus a `+0xA4` frame counter against a `+0x84`
 limit. Both are per-update authored quantities with no clock reader.
 
+### The player's pole swing holds its timeline, not its pose-apply — fixed
+
+User report: on a horizontal pole at 60 Hz the player swings twice as fast and
+the model flickers between the arc position and a slowly sinking one (repro
+`saves/debug-swinging.stsm`). Both symptoms have the same root: the whole
+state function runs once per guest update, and the pendulum step couples its
+accumulators with its apply in registers.
+
+`_HorizontalPoleSwing__6Player` (`0x80032F8C`) computes, in one pass:
+
+- `Player+0x1A8` is the swing angular velocity (`field424` in the ReChan port
+  of `PLAYER.CPP:3802`). The torque-scaled delta is accumulated per call and
+  stored at `0x800330DC` (`sw $a0, 0x1a8($s1)`).
+- `Player+0x28` (orientation.x) is the swing angle: `newAngleX =
+  angleX + ((2182 * field424) >> 16)` wrapped mod `0x10000`, stored at
+  `0x80033254`.
+- The arc position (`Player+0x1C`) and orientation stores at
+  `0x80033248`-`0x8003328C` are computed from the new angle in registers
+  within the same call.
+
+A counter-level hold cannot freeze this (the angle and position derive from
+each other in registers mid-call), and a whole-body hold fails differently:
+the body's tail (`0x80033114` onward) is an *idempotent pose-apply* — the
+rotation matrix at `Player+0x128`, the arc position and orientation stores,
+the gravity zeroing at `0x800332A4`, the FWD/BACK anim switch, the swing
+sound, and the dismount checks — that retail runs every step. A whole-body
+hold skips it on held updates, so the model rubberbands between the applied
+and unapplied poses, and Move's per-update integration (which re-arms the
+`+0xC4` gravity field to 18 and steps the position) stands between the
+counted updates and sinks the player. That is exactly the `Stack` tumble bug
+(`9bd6a03`): the fix must hold the timeline while the idempotent pose-apply
+runs every update.
+
+Fix (landed): `pole_swing_timeline`, a gate at `0x80033078` — the velocity
+read `lw $v1, 0x1a8($s1)` that starts the accumulation. A counted update
+models the displaced load and resumes at `0x80033080`; a held update jumps to
+`0x80033114`, the angle-fraction section that begins the pose-apply, so the
+velocity and angle stay at the previous authored step while the apply re-runs
+every update and keeps overwriting the position — and zeroing gravity, so
+Move reads no fall term and the stored velocity stays constant. Nothing the
+apply reads comes from the skipped region: the pole anchor (`$s2`), saved
+position (`$s3`), and angles (`0x18`-`0x20($sp)`) are set before the site,
+and the apply reloads `$v1`/`$a0`-`$a3` itself. The flip-dismount counter
+(`player_pole_swing_timer` at `0x800331B4`) now matters more than ever: its
+site lives inside the apply, so it runs every update and the counter hook
+holds it on held updates.
+
+Measured A/B on `debug-swinging.stsm` at 60 Hz, same `--guest-budget`, via
+`--motion-trace`: the swing velocity store (`store_pc` `0x800330DC`, offset
+`0x1A8`) drops from 106 writes per run (unfixed) to 53 — the authored
+half-rate, with the value still varying (the swing drives). The pose-apply
+stores (`+0x28`, `+0x1C`, and the `+0xC4` zeroing) all count 106 — every
+update — and the per-frame samples show each arc position for two consecutive
+samples with `vy` constant at zero: no alternation, no sink.
+
+Confidence: static (disassembly plus the ReChan typed port, cross-checked
+against the `Stack` precedent) and the deterministic write-count A/B; live
+visual confirmation is open on the repro save.
+
 ### Ladder contact and climb cadence need narrower hooks
 
 `Ladder::Think` (`0x80089FD4`) owns only the ladder object's death/trigger

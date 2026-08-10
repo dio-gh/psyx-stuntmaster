@@ -826,7 +826,42 @@ std::uint32_t menuFrameDecisionHook(
     return rejoin;
 }
 
-constexpr std::array<RetimeHook, 8U> clock_hooks{{
+// `_HorizontalPoleSwing__6Player`'s pendulum timeline (`0x80033078`). The site
+// is the swing angular-velocity read `lw $v1, 0x1a8($s1)`; its delay slot
+// (`lui $v0, 0x800e`) runs before the hook. The swing's pendulum step couples
+// the velocity accumulation (stored at `0x800330DC`) with the angle advance
+// and the derived arc position in registers, so no counter-level hold can
+// freeze the motion — at 60 Hz the player swings twice as fast. But the body's
+// tail is an idempotent pose-apply (rotation matrix at `Player+0x128`, the
+// arc position and orientation stores at `0x80033248`-`0x8003328C`, the
+// gravity zeroing at `0x800332A4`, the anim switch, the swing sound, and the
+// dismount checks) that retail runs every step, so a whole-body hold skips it
+// on held updates and the model rubberbands between its applied and unapplied
+// poses — the same shape as the `Stack` tumble bug (`9bd6a03`). This gate
+// holds only the timeline, `Stack`-style: a counted update models the
+// displaced load and resumes at `0x80033080`; a held update jumps to
+// `0x80033114`, the angle-fraction section that begins the pose-apply, leaving
+// the velocity and angle at the previous authored step while the apply re-runs
+// every update and keeps overwriting the position (and zeroing gravity, so
+// Move reads no fall term). Nothing the apply reads is produced by the skipped
+// region: the pole anchor (`$s2`), saved position (`$s3`), and angles
+// (`0x18`-`0x20($sp)`) are set before the site, and the apply reloads
+// `$v1`/`$a0`-`$a3` itself.
+std::uint32_t poleSwingTimelineGateHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime& runtime,
+    std::uint32_t rejoin, const void* context) noexcept {
+    if (retime.hold()) {
+        return 0x80033114U; // skip the accumulation; the pose-apply still runs
+    }
+    std::uint32_t velocity = 0U;
+    static_cast<void>(runtime.read32(state.gpr[17] + 0x1A8U, velocity));
+    hostWriteRegister(state, 3, velocity); // $v1, the displaced lw
+    return rejoin;
+}
+
+constexpr std::array<RetimeHook, 9U> clock_hooks{{
     {"menu_frame_decision",
      0x80029DC0U,
      0x80029DC8U,
@@ -844,6 +879,11 @@ constexpr std::array<RetimeHook, 8U> clock_hooks{{
      RetimeHookKind::gate,
      &callGateHook,
      &anim_loop_gate},
+    {"pole_swing_timeline",
+     0x80033078U,
+     0x80033080U,
+     RetimeHookKind::gate,
+     &poleSwingTimelineGateHook},
     {"fullscreen_fade",
      0x8002C9C0U,
      0x8002C9C8U,

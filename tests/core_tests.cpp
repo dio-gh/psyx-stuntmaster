@@ -4490,6 +4490,80 @@ void runningDynamicPassengerDoesNotAccumulateGravity() {
             std::array<std::int32_t, 2U>{-9, 123}));
 }
 
+// `pole_swing_timeline` holds only the horizontal pole-swing's pendulum
+// accumulation, `Stack`-style: the body's tail is an idempotent pose-apply
+// that retail runs every step, so a whole-body hold rubberbands the model
+// between its applied and unapplied poses (the reported flicker). A counted
+// update models the displaced `lw $v1, 0x1a8($s1)` and resumes at the rejoin;
+// a held update jumps straight to the pose-apply start `0x80033114` with the
+// velocity register untouched, so the accumulation store between never runs
+// and the position is rewritten from the held angle on every update.
+void poleSwingTimelineGateHoldsOnlyTheAccumulation() {
+    using Runtime = stuntmaster::psx::R3000Runtime;
+    using stuntmaster::game::RetimeHook;
+    using stuntmaster::game::RetimeHooks;
+
+    constexpr std::uint32_t site = 0x80033078U;
+    constexpr std::uint32_t apply_start = 0x80033114U;
+    const auto clock_hooks = stuntmaster::game::retimeClockHooks();
+    const auto found = std::find_if(
+        clock_hooks.begin(), clock_hooks.end(),
+        [](const RetimeHook& hook) { return hook.pc == site; });
+    assert(found != clock_hooks.end());
+    const std::array<RetimeHook, 1U> span{*found};
+
+    constexpr std::uint32_t stack = 0x801F0000U;
+    constexpr std::uint32_t player = 0x80121000U;
+    constexpr std::uint32_t jr_ra = encodeR(31, 0, 0, 0, 0x08);
+    // The site, its delay slot, the rejoin marker, then the skipped region
+    // (which the held path never executes), then `jr $ra` at the apply start.
+    std::array<std::uint32_t, 41U> window{};
+    window[0] = 0U;                          // hooked lw $v1,0x1a8($s1)
+    window[1] = encodeI(0x0F, 0, 2, 0x800E); // lui $v0,0x800e, delay slot
+    window[2] = encodeI(0x09, 0, 8, 0x5555); // addiu $t0,$zero,0x5555, rejoin
+    window[39] = jr_ra;                      // at 0x80033114, the apply start
+    static_assert(site + 39U * 4U == apply_start);
+
+    const auto run = [&](std::uint32_t divisor, bool held) {
+        Runtime runtime;
+        RetimeHooks hooks{span};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        assert(runtime.write32(player + 0x1A8U, 0x1234U));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(3, 0xDEADBEEFU); // $v1 = the velocity register
+        runtime.setRegister(17, player);     // $s1 = the swinging player
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 64; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason ==
+                   stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t velocity = 0U;
+        assert(runtime.read32(player + 0x1A8U, velocity));
+        return std::array<std::uint32_t, 3U>{
+            runtime.state().gpr[3],      // $v1
+            runtime.state().gpr[8],      // $t0, set only if the rejoin ran
+            velocity,                    // +0x1A8, never written by the gate
+        };
+    };
+    // Counted: the displaced load is modeled and the rejoin runs.
+    assert((run(2U, false) == std::array<std::uint32_t, 3U>{0x1234U, 0x5555U, 0x1234U}));
+    // Held: the accumulation is skipped; the pose-apply start is reached
+    // directly with the velocity register untouched.
+    assert((run(2U, true) == std::array<std::uint32_t, 3U>{0xDEADBEEFU, 0U, 0x1234U}));
+    // Divisor one counts every update.
+    assert((run(1U, false) == std::array<std::uint32_t, 3U>{0x1234U, 0x5555U, 0x1234U}));
+}
+
 void widescreenCullSettingTogglesAndNormalizesOldSaves() {
     using stuntmaster::game::WidescreenLowerBounds;
     using stuntmaster::game::applyRetailPatch;
@@ -5435,6 +5509,7 @@ int main() {
     ledgeTraceDoesNotChangeWhatLedgeCheckDecides();
     obstacleCollisionGateServicesContactsThatCannotWait();
     runningDynamicPassengerDoesNotAccumulateGravity();
+    poleSwingTimelineGateHoldsOnlyTheAccumulation();
     ladderStateHooksKeepAuthoredCadence();
     retimeOverlayHooksActivatePerFingerprint();
     butchStompEventCounterUsesTheAuthoredClock();
