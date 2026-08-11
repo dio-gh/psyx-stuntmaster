@@ -70,8 +70,57 @@ Guest execution stays inside `R3000Runtime::runBatch` until a machine boundary:
 an HLE/BIOS or diagnostic PC, a claimed MMIO access, a stop/fault, or the exact
 instruction budget for the next VBlank/probe deadline. RAM boundaries use a
 64 KiB bitmap indexed by normalized word address; non-RAM boundaries are a
-small sparse list. The batch path still executes `step()` for every ordinary
-instruction, so it changes scheduler crossing cost rather than CPU semantics.
+small sparse list.
+
+`runBatch` first translates RAM code into blocks of at most 64 predecoded
+operations, ending a block after a control transfer and its delay slot. On x64,
+a block that remains hot for 16 entries is lowered again into write-once native
+regions. The current native tier caches two high-use guest registers in
+volatile host registers and directly emits common non-trapping ALU operations
+and guarded RAM loads plus aligned byte/halfword/word stores. Stage four also
+emits the ordinary conditional, direct, and register-indirect control-transfer
+forms together with their architectural delay slots. Both branch arms return
+to host dispatch at the selected guest PC; link writes and a load immediately
+before the branch retain R3000A ordering. Delayed loads stay live across a
+native region. A store terminates its region and returns both the executed
+count and masked physical address; the host advances the touched code-page
+generation before dispatching another guest operation. An installed diagnostic
+write sink keeps store regions on the portable path so every watched value and
+PC remains observable. COP0/GTE, unusual memory operations, and any failed
+direct-RAM guard side-exit to the shared portable semantic executor.
+
+An isolated `SB`/`SH`/`SW` is allowed to form a one-instruction native region;
+other regions retain the two-instruction minimum. Stores already require an
+immediate return for invalidation, and dynamic profiling showed isolated `SW`
+accounted for almost all post-stage-four fallback execution. Probe summaries
+include compact opcode and SPECIAL-function fallback histograms so later
+lowering work can be justified by executed frequency rather than static code
+coverage.
+
+Generated pages transition from read/write to read/execute before publication;
+there is no writable/executable mapping. Every native entry still checks the
+whole region against the exact instruction budget, host boundary bitmap,
+active retime hooks, interrupt state, branch-delay state, and architectural
+load-delay state. A guarded load or store can return after an ALU prefix with
+registers, PC, and any pending delayed load materialized exactly for the
+portable retry. A guard failure in a control-transfer delay slot additionally
+retains the selected target, branch PC, and active delay marker, so the portable
+retry preserves branch-delay exception state.
+
+The single-step interpreter remains the correctness oracle and the fallback
+for code outside RAM. `--cached-recompiler-cpu` disables native lowering while
+retaining stage one's predecoded blocks; `--interpreter-cpu` selects the oracle
+for the whole session. Both are diagnostic host choices and do not affect
+quick-save compatibility. Non-x64 hosts currently remain on the cached tier.
+
+Every recompiled operation still observes the exact instruction budget and
+host boundary before execution and yields immediately after claimed MMIO.
+Writes to a 4 KiB RAM page that has supplied compiled code advance that page's
+generation; a block whose generation changed cannot execute another cached
+or native operation. This covers overlays, retail patches, and guest self-modifying code
+without flushing the cache for ordinary data writes. The cache and its counters
+are host acceleration state: they are neither serialized in quick saves nor
+copied into a restored machine.
 
 The supported retail image spends most of a heavy frame in
 `RenderQueue::WaitForLayer`. A failed poll from `0x8009FDF0` back to itself is
@@ -242,7 +291,7 @@ asynchronous host write into guest RAM.
 Quick saves are captured and restored only by the guest worker, between
 execution batches. Main-thread F5/F6/F9 edges publish atomic request bits; the
 worker consumes them immediately before an owed VBlank, avoiding any request
-check in the interpreter loop. A successful load abandons that old boundary so
+check in the guest execution loop. A successful load abandons that old boundary so
 the restored scheduler is not advanced once more. The versioned payload
 contains guest CPU/RAM and every
 emulated device plus callback, retiming, pacing, and in-progress GPU publication

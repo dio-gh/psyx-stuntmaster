@@ -35,6 +35,7 @@ add_library(stuntmaster_core
     src/stuntmaster/game/retail_patch.cpp
     src/stuntmaster/game/retime_hooks.cpp
     src/stuntmaster/game/supported_game.cpp
+    src/stuntmaster/platform/executable_memory.cpp
     src/stuntmaster/presentation/debug_overlay.cpp
     src/stuntmaster/presentation/widescreen_overlay.cpp
     src/stuntmaster/psx/bios_hle.cpp

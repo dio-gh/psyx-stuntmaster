@@ -13,11 +13,11 @@
 // described in `docs/RECOMP_MIGRATION.md`.
 //
 // Every retiming site that used to jump into a MIPS body in the patch arena is
-// instead a `RetimeHook` keyed on its guest PC. The interpreter consults the
-// table before dispatching an instruction; a recompiler will consult the same
-// table at translation time. Guest RAM stays byte-clean: no host write ever
-// lands in executable guest memory, so the self-modifying-code invalidations a
-// recompiler needs never exist for the retiming itself.
+// instead a `RetimeHook` keyed on its guest PC. The interpreter and cached
+// recompiler consult the table before dispatching an instruction; a future
+// native lowering can call the same hook body. Guest RAM stays byte-clean: no
+// host write ever lands in executable guest memory, so the self-modifying-code
+// invalidations a recompiler needs never exist for the retiming itself.
 //
 // The arithmetic bodies are ported to C++ literally, with the MIPS rounding
 // preserved; the whole-register-file oracle tests are the gate that keeps a

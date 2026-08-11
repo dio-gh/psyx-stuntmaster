@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-11.
 
 ## Snapshot
 
@@ -104,6 +104,9 @@ The following flags are diagnostic or experimental, not recommended defaults:
   pass normally remains authored-rate gated, but services active pushers,
   runners on dynamic obstacles, and airborne jump/fall humanoids on held
   updates, plus every ladder state whose one-update contact bit cannot wait.
+  The Pushable displacement and Conveyor's direct player carry remain gated
+  to authored ticks inside those exceptions, preventing 2x movement while
+  pushing or running on a belt.
   Jumpers with a live passenger ticket
   disembark before the platform carries them again; ticketless jumpers still
   receive the sub-step collision needed to land on thin dynamic geometry
@@ -171,13 +174,16 @@ The following flags are diagnostic or experimental, not recommended defaults:
   about 316,000 of them on the first-level route, so the console CPU sustains
   roughly 107 updates a second. Past that the loop cannot finish a step per
   refresh and authored timelines run slow at an otherwise correct schedule.
-- The host uses a boundary-batched interpreter plus an exact fast-forward for
-  retail's side-effect-free `WaitForLayer` polls. On the supplied heavy save,
+- The host uses a boundary-batched native x64 recompiler plus an exact fast-forward
+  for retail's side-effect-free `WaitForLayer` polls. On the supplied heavy save,
   an untouched 100M-instruction probe averaged 2.345 s (42.6M/s), while the
   optimized probe averaged 0.700 s (142.9M guest-equivalent instructions/s),
-  a 3.35x gain. About 65.1M instructions were verified idle polls; ordinary
-  instructions remain interpreted. Three 20M probes from distinct gameplay
-  saves retained all legacy diagnostics and measured 2.41x-2.86x. Scale two
+  a 3.35x gain. About 65.1M instructions were verified idle polls. Ordinary
+  RAM code is translated first into cached blocks of predecoded operations;
+  hot regions then lower common ALU operations and guarded RAM loads/stores to
+  W^X native code with two-register allocation and precise side exits. Three 20M probes
+  from distinct gameplay saves retained all legacy diagnostics and measured
+  2.41x-2.86x. Scale two
   therefore has headless CPU margin on these routes, but presentation and
   non-idle-heavy routes still require measurement. Scale two is live-confirmed
   at full speed on the tested gameplay route. Audio and gameplay slow together
@@ -369,9 +375,67 @@ Detailed addresses, disassembly, measurements, and confidence labels belong in
 12. Scale two is now live-confirmed at full speed on the tested gameplay route.
     Boundary batching plus exact `WaitForLayer` poll fast-forward raised the
     heavy 100M probe from 42.6M/s to 142.9M guest-equivalent instructions/s
-    (3.35x), with identical legacy diagnostics. A cached block/JIT backend
-    remains the next general-purpose step if a non-idle-heavy route or the
-    future cycle-aware scheduler consumes that margin.
+    (3.35x), with identical legacy diagnostics. RAM basic blocks are decoded
+    once and invalidated by code-page generations; the cached tier executes
+    through the shared interpreter semantic bodies. Differential tests cover
+    branches, delay slots, delayed loads, memory, host boundaries, retime
+    hooks, guest self-modifying code, native delayed loads, and native side
+    exits. The scripted 900M title-to-level route stops on budget with 1,594
+    VBlanks and zero GPU segment mismatches.
+    A controlled `--interpreter-cpu` selector now keeps the oracle available
+    for backend A/B runs. After warming both paths, four alternating 150M boot
+    probes averaged 2.490 s through the cached recompiler and 3.462 s through
+    the interpreter: 39.0% more instruction throughput and 28.1% less wall
+    time. Three alternating scripted 900M title-to-level probes averaged
+    5.808 s versus 7.853 s, a 35.2% effective-throughput gain even with
+    588M verified idle instructions fast-forwarded identically on both paths.
+    The second x64 stage is now the default. Four alternating 150M probes
+    averaged 1.934 s natively and 2.669 s with
+    `--cached-recompiler-cpu`: 38.0% more throughput and 27.5% less wall time
+    over stage one, with 60.4M instructions executed in native regions. On the
+    scripted 900M route, native/cached/interpreter runs took 4.334/5.983/7.807 s
+    and ended at the same PC with 1,594 VBlanks and zero segment mismatches.
+    Native lowering therefore adds 38.0% effective throughput over the cached
+    tier and 80.1% over the interpreter on that route.
+    Stage three adds guarded RAM `SB`/`SH`/`SW`, ending each store region at the
+    write so the host can invalidate a reported code-page address before the
+    next guest operation. Scratchpad/MMIO/alignment guards retry portably, and
+    write tracing disables native stores. Three current 150M runs averaged
+    1.836/2.703/3.575 s for native/cached/interpreter: 47.2% more throughput
+    than the cached tier and 94.7% over the interpreter. Native coverage rose
+    from 60.4M to 76.5M instructions, including 9.44M stores; versus the stage
+    two native baseline, wall time fell another 5.1%. A current 900M route took
+    4.047/6.032/7.814 s, with all backends at the same PC, 1,594 VBlanks, and
+    zero GPU segment mismatches.
+    Stage four lowers the ordinary conditional branches, REGIMM branch/link
+    forms, and direct/indirect jumps together with their delay slots. Taken and
+    fall-through paths, link hazards, a load immediately before a branch,
+    guarded memory in the slot, and a boundary at the slot are differential-
+    tested against the interpreter. Three alternating 150M runs averaged
+    1.214/2.641/3.563 s for native/cached/interpreter: 117.5% more throughput
+    than the cached tier and 193.5% over the interpreter. Native coverage rose
+    to 143.1M instructions (95.4%), including 32.28M control transfers and
+    12.17M stores; versus the recorded stage-three native baseline, wall time
+    fell 33.9%. A current 900M route took 2.906/5.914/7.890 s, with all
+    backends at PC `0x80052640`, 1,594 VBlanks, and zero GPU segment mismatches.
+    COP0/GTE operations, unusual memory forms, cross-block native linking, and
+    non-x64 lowering remain future expansion points.
+    Stage five adds dynamic opcode/SPECIAL fallback histograms and permits an
+    isolated guarded `SB`/`SH`/`SW` to form a one-instruction native region.
+    The histogram showed `SW` was 6.69M of the remaining 6.91M portable
+    instructions on the 150M route. Native coverage now reaches 149.78M
+    instructions (99.85%) and 18.85M stores; isolated `SW` fallback falls to
+    about 19K warm-up/guarded executions. A direct five-round stage-four versus
+    stage-five A/B, excluding the first cold pair, measured 1.257 versus
+    1.186 s, 5.6% less wall time. After explicit backend warm-up, three current
+    150M runs averaged 1.204/2.709/3.600 s for native/cached/interpreter, 124.9%
+    more throughput than the cached tier and 198.9% over the interpreter. The
+    900M route lowers 311.37M of 313.55M non-idle instructions (99.31%) and
+    remains bit-identical at PC `0x80052640`, 1,594 VBlanks, and zero GPU
+    segment mismatches. Variable shifts and HI/LO arithmetic were prototyped
+    but rejected after direct A/B runs were neutral to slightly slower; they,
+    COP0/GTE, unusual memory forms, native block linking, and non-x64 lowering
+    remain portable/future work.
 
 ### Presentation polish
 

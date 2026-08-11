@@ -1346,6 +1346,25 @@ extracted overlay/boot bytes:
   active humanoids and makes that call, so bypassing it services the pusher
   without sub-stepping every other humanoid's passenger and ledge state.
 
+- **Conveyor carry must not inherit the running-contact exception
+  (2026-08-11).** `Conveyor::HandleHumanoidCollision` (NBOL
+  `0x8001C2CC`) does not publish a per-update contact bit. When humanoid flag
+  `+0x58:12` is set, it directly adds the conveyor vector at `+0x74..+0x7C` to
+  player position `+0x7C..+0x84` (`sw` sites `0x8001C364`..`0x8001C36C`).
+  The `AS_Run` held-update exception therefore called this full authored-frame
+  carry twice per retail frame while the player moved on a belt. Standing did
+  not trigger the exception, which hid the defect in the original no-input
+  conveyor trace.
+
+  The fingerprint-gated `conveyor_collision_hold` at `0x8001C2DC` uses the
+  unique NBOL `Conveyor::Think` window. On a held update it unwinds the
+  handler's `0x28`-byte frame and returns before the position add; on a counted
+  update it models the displaced `lw $v0,0x58($a0)` and rejoins retail at
+  `0x8001C2E4`. From `saves/debug-conveyor.stsm`, eight 60 Hz VBlanks with
+  continuous left input previously reached the three position stores six
+  times; the fixed native, cached, and interpreter backends each reach them
+  four times, exactly once per authored update.
+
 - **Jumping and falling need the same narrow held-update exception
   (2026-08-08, extended 2026-08-09).**
   `MoveThings__2AI` runs humanoid-obstacle collision before the per-object

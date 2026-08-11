@@ -3,6 +3,7 @@
 
 #include "stuntmaster/psx/executable.hpp"
 #include "stuntmaster/psx/gte_runtime.hpp"
+#include "stuntmaster/platform/executable_memory.hpp"
 
 #include <array>
 #include <cstddef>
@@ -10,6 +11,7 @@
 #include <functional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -44,6 +46,26 @@ struct R3000RunResult {
     std::uint64_t instructions{};
     std::uint32_t pc{};
     std::uint32_t instruction{};
+};
+
+enum class R3000ExecutionBackend : std::uint8_t {
+    interpreter,
+    cached_recompiler,
+    native_recompiler,
+};
+
+struct R3000RecompilerStats {
+    std::uint64_t blocks_compiled{};
+    std::uint64_t instructions_executed{};
+    std::uint64_t cache_invalidations{};
+    std::uint64_t native_blocks_compiled{};
+    std::uint64_t native_regions_compiled{};
+    std::uint64_t native_instructions_executed{};
+    std::uint64_t native_stores_executed{};
+    std::uint64_t native_control_flows_executed{};
+    std::uint64_t native_side_exits{};
+    std::array<std::uint64_t, 64U> native_fallback_opcodes{};
+    std::array<std::uint64_t, 64U> native_fallback_functions{};
 };
 
 // Compact set of guest PCs at which a batched executor must return control to
@@ -115,7 +137,10 @@ struct R3000State {
     R3000DelayedLoadState next_load_delay{};
 };
 
-// Deterministic interpreter for the user-code portion of the original R3000A.
+// Deterministic execution runtime for the user-code portion of the original
+// R3000A. Batched execution uses native x64 regions over cached basic blocks
+// where available; `step()` remains the single-instruction interpreter and
+// correctness oracle.
 // Hardware effects are supplied by an optional width-aware machine bus. Any
 // unclaimed MMIO byte remains available through the compatibility shadow.
 class R3000Runtime final {
@@ -158,6 +183,10 @@ public:
         "the patch arena must not overlap the interrupt stack");
 
     R3000Runtime();
+    R3000Runtime(const R3000Runtime& other);
+    R3000Runtime& operator=(const R3000Runtime& other);
+    R3000Runtime(R3000Runtime&&) noexcept = default;
+    R3000Runtime& operator=(R3000Runtime&&) noexcept = default;
 
     void clearMemory() noexcept;
     void loadExecutable(const Executable& executable);
@@ -187,18 +216,18 @@ public:
     void settleLoadDelay() noexcept;
     void setRegister(std::uint8_t reg, std::uint32_t value) noexcept;
     void attachMmioBus(R3000MmioBus* bus) noexcept { mmio_bus_ = bus; }
-    // The sink's `pc` is the interpreter's `pc` register at write time. `step`
-    // advances it to `next_pc` before executing the opcode, so for a guest
-    // store it points one instruction past the store. Host-initiated writes
-    // such as `loadBytes` report whatever `pc` happened to hold.
+    // The sink's `pc` is the runtime's guest PC register at write time. Both
+    // backends advance it to `next_pc` before executing the opcode, so for a
+    // guest store it points one instruction past the store. Host-initiated
+    // writes such as `loadBytes` report whatever `pc` happened to hold.
     void setMemoryWriteSink(MemoryWriteSink sink) {
         memory_write_sink_ = std::move(sink);
     }
     void setExternalInterrupt(bool active) noexcept;
 
     // Attaches the host retime-hook table. When `hooks` is non-null and
-    // `hooks->active()`, the interpreter consults `hooks->find(pc)` before
-    // dispatching an instruction and runs the matched hook's `fn` in place of
+    // `hooks->active()`, both backends consult `hooks->find(pc)` before
+    // dispatching an instruction and run the matched hook's `fn` in place of
     // the site (with the site's delay-slot instruction executed first). The
     // hooks object outlives the runtime; a null pointer detaches.
     void setRetimeHooks(game::RetimeHooks* hooks) noexcept;
@@ -211,9 +240,11 @@ public:
 
     [[nodiscard]] R3000RunResult step() noexcept;
     // Executes ordinary guest instructions internally until the budget is
-    // consumed or host attention is required. A boundary is observed before
-    // its instruction; a claimed MMIO access is observed immediately after
-    // its instruction, preserving the single-step scheduler's device ordering.
+    // consumed or host attention is required. The default backend translates
+    // straight-line guest blocks into predecoded operations and caches them;
+    // the interpreter backend is retained for differential testing. A boundary
+    // is observed before its instruction; a claimed MMIO access is observed
+    // immediately after its instruction, preserving device ordering.
     [[nodiscard]] R3000RunResult runBatch(
         std::uint64_t instruction_budget,
         const R3000ExecutionBoundaries& boundaries,
@@ -240,7 +271,97 @@ public:
     [[nodiscard]] bool readState(core::StateReader& reader);
     void rebindStatePointers() noexcept;
 
+    void setExecutionBackend(R3000ExecutionBackend backend) noexcept {
+        execution_backend_ = backend;
+    }
+    [[nodiscard]] R3000ExecutionBackend executionBackend() const noexcept {
+        return execution_backend_;
+    }
+    [[nodiscard]] const R3000RecompilerStats& recompilerStats() const noexcept {
+        return recompiler_stats_;
+    }
+
 private:
+    struct DecodedInstruction {
+        std::uint32_t pc{};
+        std::uint32_t instruction{};
+        std::uint32_t immediate{};
+        std::uint8_t opcode{};
+        std::uint8_t rs{};
+        std::uint8_t rt{};
+        std::uint8_t rd{};
+        std::uint8_t shift{};
+        std::uint8_t function{};
+        bool may_write_memory{};
+    };
+
+    struct CompiledCodePage {
+        std::uint16_t index{};
+        std::uint32_t generation{};
+    };
+
+    static constexpr std::size_t recompiler_page_size = 4U * 1024U;
+    static constexpr std::size_t recompiler_page_count =
+        ram_size / recompiler_page_size;
+    static constexpr std::size_t maximum_compiled_block_instructions = 64U;
+    static constexpr std::uint16_t native_compilation_threshold = 16U;
+
+    // Low 32 bits are the executed instruction count. A region ending in a
+    // native RAM store returns its masked physical address in the high half so
+    // the host can invalidate a touched code page before redispatch.
+    using NativeEntry = std::uint64_t (*)(
+        R3000State* state, std::byte* ram) noexcept;
+
+    struct NativeRegion {
+        NativeEntry entry{};
+        std::uint8_t instruction_count{};
+        std::uint8_t store_width{};
+        // One-based position of a terminal branch or jump. Zero means that
+        // the region is straight-line.
+        std::uint8_t control_flow_instruction{};
+    };
+
+    struct NativeBlock {
+        std::unique_ptr<platform::ExecutableMemory> code;
+        std::array<NativeRegion, maximum_compiled_block_instructions> regions{};
+    };
+
+    struct CompiledBlock {
+        std::vector<DecodedInstruction> instructions;
+        std::array<CompiledCodePage, 2U> pages{};
+        std::uint8_t page_count{};
+        std::uint16_t execution_count{};
+        std::unique_ptr<NativeBlock> native;
+    };
+
+    [[nodiscard]] static DecodedInstruction decodeInstruction(
+        std::uint32_t pc, std::uint32_t instruction) noexcept;
+    [[nodiscard]] bool prepareInstruction(R3000RunResult& result) noexcept;
+    [[nodiscard]] R3000RunResult executeDecodedInstruction(
+        const DecodedInstruction& decoded) noexcept;
+    [[nodiscard]] R3000RunResult runInterpreterBatch(
+        std::uint64_t instruction_budget,
+        const R3000ExecutionBoundaries& boundaries,
+        bool execute_initial_boundary) noexcept;
+    [[nodiscard]] R3000RunResult runRecompiledBatch(
+        std::uint64_t instruction_budget,
+        const R3000ExecutionBoundaries& boundaries,
+        bool execute_initial_boundary) noexcept;
+    [[nodiscard]] CompiledBlock* findOrCompileBlock(std::uint32_t pc) noexcept;
+    void considerNativeCompilation(CompiledBlock& block) noexcept;
+    [[nodiscard]] std::unique_ptr<NativeBlock> compileNativeBlock(
+        const CompiledBlock& block) noexcept;
+    [[nodiscard]] bool canRunNativeRegion(
+        const CompiledBlock& block,
+        std::size_t instruction_index,
+        std::uint64_t instruction_budget,
+        std::uint64_t instructions_executed,
+        const R3000ExecutionBoundaries& boundaries,
+        bool execute_initial_boundary) const noexcept;
+    [[nodiscard]] bool compiledBlockValid(const CompiledBlock& block) const noexcept;
+    void noteRamWrite(std::uint32_t physical_address, std::uint32_t size) noexcept;
+    void invalidateRecompilerCache() noexcept;
+
     [[nodiscard]] std::byte* memoryByte(std::uint32_t address) noexcept;
     [[nodiscard]] const std::byte* memoryByte(std::uint32_t address) const noexcept;
     [[nodiscard]] static bool physicalAddress(
@@ -269,7 +390,7 @@ private:
     mutable bool mmio_accessed_{};
     MemoryWriteSink memory_write_sink_;
     game::RetimeHooks* retime_hooks_{};
-    // The two-step hook invocation: at a site the interpreter arms a virtual
+    // The two-step hook invocation: at a site the runtime arms a virtual
     // branch to `pc + 4` (the site's delay slot), and the step that executes
     // the delay slot then runs the hook and resumes at the PC its `fn`
     // returns. If execution leaves the expected delay-slot PC instead — an
@@ -278,6 +399,13 @@ private:
     const game::RetimeHook* pending_retime_hook_{};
     std::uint32_t pending_retime_hook_site_{};
     std::uint32_t pending_retime_hook_pc_{};
+    R3000ExecutionBackend execution_backend_{
+        R3000ExecutionBackend::native_recompiler};
+    std::unordered_map<std::uint32_t, CompiledBlock> recompiler_cache_;
+    std::array<std::uint32_t, recompiler_page_count>
+        recompiler_page_generations_{};
+    std::array<bool, recompiler_page_count> recompiler_code_pages_{};
+    R3000RecompilerStats recompiler_stats_{};
 };
 
 } // namespace stuntmaster::psx

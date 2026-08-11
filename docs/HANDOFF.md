@@ -101,6 +101,35 @@ Treat these as stable signals:
 - a deterministic probe stops on its instruction budget, not a fault;
 - the capture or live window contains a recognizable retail frame.
 
+Normal x64 execution uses the native recompiler. `--cached-recompiler-cpu`
+keeps stage one's predecoded block tier but disables native lowering;
+`--interpreter-cpu` runs the same session through the single-step oracle. These
+change no guest or quick-save state. Warm each path once before timing and
+alternate them to limit host-frequency drift.
+
+Stage three additionally lowers guarded RAM `SB`/`SH`/`SW`. A native store is
+always the last instruction in its region and reports its physical address to
+the host, which performs code-page invalidation before redispatch. Failed RAM
+or alignment guards retry the store portably; an active memory-write sink
+disables native store regions so traces retain every address, value, width, and
+guest PC.
+
+Stage four lowers `BEQ`/`BNE`/`BLEZ`/`BGTZ`, the four supported REGIMM
+branch/link forms, and `J`/`JAL`/`JR`/`JALR` together with their delay slots.
+The generated region returns at the selected target or fall-through PC rather
+than linking native blocks. A failed memory guard in the slot returns after the
+control transfer with `pc`, `next_pc`, `branch_pc`, and `branch_delay_slot`
+materialized for the portable retry. Boundaries or retime hooks at either the
+transfer or its slot disable the whole native pair.
+
+Stage five permits isolated guarded `SB`/`SH`/`SW` regions. Do not generalize
+the one-instruction exception without benchmarking: a store must already return
+for invalidation, while measured single-instruction integer regions did not
+repay native-call overhead. `guest_native_fallback_opcodes` and
+`guest_native_fallback_functions` report the dynamic portable remainder. On
+the current 150M route isolated stores raise native coverage to 99.85%; on the
+current 900M route they cover 99.31% of the 313.5M non-idle instructions.
+
 The exact stop PC, primitive count, VBlank count, and callback count are
 diagnostics. They change as scheduling and frame publication improve.
 `SCREENSHOT.BMP` is now the faithful render-target readback (upright, taken
@@ -268,12 +297,19 @@ inside the PsyCross publication block exists.
   with identical legacy diagnostics). Scale two has headless margin on the
   tested gameplay saves and is now live-confirmed at full speed on the tested
   route. Higher update rates still need their own live validation.
-- `R3000Runtime::runBatch` may only cross ordinary guest PCs. It yields before
-  HLE/BIOS/diagnostic boundaries, after claimed MMIO, and exactly at the next
-  VBlank/probe budget. `RetailHle::fastForwardWaitForLayerPolls` is additionally
+- `R3000Runtime::runBatch` may only cross ordinary guest PCs. Its default x64
+  native tier lowers hot regions from cached RAM blocks but still
+  yields before HLE/BIOS/diagnostic boundaries, after claimed MMIO, and exactly
+  at the next VBlank/probe budget. `RetailHle::fastForwardWaitForLayerPolls` is additionally
   gated by the exact retail PC/register/object graph, a zero virtual
   `CheckLayer` result, no owed GPU completion, and disabled traces/watch writes.
   Preserve every one of those guards if this path changes.
+- Recompiled blocks and executable pages are host-only acceleration state. A write to an active
+  4 KiB code page invalidates its generation before another cached operation
+  may run, including a write emitted by a native region; ordinary data pages do
+  not flush the cache. Do not serialize or copy the block cache into quick
+  saves. Native memory must remain W^X. `step()` remains the interpreter oracle
+  and the non-RAM fallback.
 - Before investigating any "retiming is wrong" report, check whether audio is
   slow too. Audio production is per guest VBlank and never passes through a
   retiming patch, so slow audio means a throughput shortfall, not a timing bug.
@@ -294,10 +330,12 @@ inside the PsyCross publication block exists.
   and the overriding `FWEffect::Update`, the tutorial arrow's overlay-local
   counter, path-driven `Platform::Move` (including level-one traffic), the
   boot executable's shared private fullscreen-fade counter, and the obstacle
-  collision/carry pass (gated to the authored rate, except an active pusher's
-  inner collision runs every update to preserve its contact state). The fade
-  needs its own accumulator because its four render loops do not call
-  `Step__4Time`.
+  collision/carry pass. Narrow held-update contact exceptions service active
+  pushers, runners, airborne humanoids, and ladder states, but any authored
+  side effect reached through that inner pass needs its own hold: Pushable's
+  displacement and `Conveyor::HandleHumanoidCollision`'s direct carry are both
+  explicitly gated back to the counted update. The fade needs its own
+  accumulator because its four render loops do not call `Step__4Time`.
 - When retiming a field, search the boot executable and all overlays for every
   reader and writer. Hook the singular side when possible.
 - Overlay load addresses are reused. Overlay hooks carry a fingerprint window

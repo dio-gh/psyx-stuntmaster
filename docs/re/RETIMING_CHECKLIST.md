@@ -37,7 +37,7 @@ Shape-1 table, and `_Collapse__4Boss`, Dante's missile/retarget counters,
 `_ButchDMS`, `_ButchDMS_Charge`, `_PaulDMS` (recovery + attack duration),
 the henchman engage delay, and `CounterAttack`'s hit frames are installed
 with fingerprint windows verified unique across all four `*_REL.BIN` files
-(`overlay=45`). Two live-reported interaction bugs are fixed: the fire-pit
+(`overlay=46`). Three live-reported interaction bugs are fixed: the fire-pit
 run/burn flicker and doubled burn damage (AS_Hotfoot added to the
 collision-pass held exceptions — `Think__8Humanoid` clears the `+0x170`
 contact word every update, and the hook now re-issues `Untouchable`'s fire
@@ -45,7 +45,10 @@ bit `+0x170:3` directly on held updates instead of running the inner
 collision, so the per-authored damage tick does not double) and the 2x push
 speed (OL1 `pushable_collision_hold` gates the displacement + engage counter
 in `Pushable::HandleHumanoidCollision`, which the AS_PushObject exception
-runs every update). A third report — the horizontal pole swing running 2x
+runs every update), and the 2x conveyor carry while running (NBOL
+`conveyor_collision_hold` returns from `Conveyor::HandleHumanoidCollision` on
+held AS_Run contact checks, while counted updates retain the retail body). A
+fourth report — the horizontal pole swing running 2x
 fast at 60 Hz, then flickering between the arc and a sinking position under
 the first (whole-body hold) attempt — is fixed by `pole_swing_timeline`, a
 timeline-only gate at `0x80033078` (see the README section "The player's

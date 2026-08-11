@@ -115,7 +115,7 @@ void usage() {
            "[--render-size <width>x<height>] "
            "[--presentation-rate <hz>] [--guest-cpu-scale <1-4>] "
            "[--guest-update-rate <multiple of 30, 30-240>] [--retime-motion] "
-           "[--retime-clock] "
+           "[--retime-clock] [--interpreter-cpu|--cached-recompiler-cpu] "
            "[--persistent-framebuffer] "
            "[--cd-read-pacing [drive-speed-multiple]|--no-cd-read-pacing] "
            "[--widescreen-cull|--no-widescreen-cull]\n";
@@ -255,6 +255,19 @@ std::optional<Options> parseOptionsImpl(
             result.ledge_trace_inputs = true;
         } else if (argument == "--debug-overlay" && !result.debug_overlay) {
             result.debug_overlay = true;
+        } else if (
+            argument == "--interpreter-cpu" && !result.interpreter_cpu) {
+            if (result.cached_recompiler_cpu) {
+                return std::nullopt;
+            }
+            result.interpreter_cpu = true;
+        } else if (
+            argument == "--cached-recompiler-cpu" &&
+            !result.cached_recompiler_cpu) {
+            if (result.interpreter_cpu) {
+                return std::nullopt;
+            }
+            result.cached_recompiler_cpu = true;
         } else if (
             argument == "--experimental-host-menu" &&
             !command_line_host_menu) {

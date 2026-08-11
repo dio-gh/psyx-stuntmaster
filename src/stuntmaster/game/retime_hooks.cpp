@@ -522,6 +522,14 @@ inline constexpr std::array<std::uint32_t, 12U> pushable_window{
     0x8E020080U, 0x00000000U, 0x14400009U, 0x00008821U, 0x8E020084U,
     0x00000000U, 0x14400005U};
 
+// The held-update AS_Run contact exception enters every obstacle collision
+// handler, including Conveyor's direct full-frame carry. Hold that handler at
+// its first load after the 0x28-byte frame is established: counted updates
+// model `lw $v0,0x58($a0)` and continue, while held updates unwind and return
+// before the conveyor velocity is added to the humanoid position.
+inline constexpr RetimeHeldPrologue conveyor_collision_hold_prologue{
+    0x8C820058U, 0x28U, {0U, 0U}};
+
 // One overlay obstacle `Think` held prologue's fingerprint: the entry (which is
 // also the window's address) plus the twelve retail words that must be present
 // for the hook's overlay to be the one loaded.
@@ -1911,6 +1919,21 @@ std::span<const RetimeOverlayHook> retimeOverlayHooks() noexcept {
              0x800227C8U,
              platform_move_speed_window},
         };
+        // `Conveyor::HandleHumanoidCollision` lives in NBOL beside
+        // `Conveyor::Think`, so it shares that function's unique fingerprint.
+        // The generic AS_Run held-update contact pass must still reach other
+        // dynamic obstacles; only this authored full-frame carry is held.
+        const auto [conveyor_window_address, conveyor_window] =
+            overlayFingerprintFor("conveyor_think");
+        out.push_back(RetimeOverlayHook{
+            {"conveyor_collision_hold",
+             0x8001C2DCU,
+             0x8001C2E4U,
+             RetimeHookKind::gate,
+             &heldPrologueHook,
+             &conveyor_collision_hold_prologue},
+            conveyor_window_address,
+            conveyor_window});
         // The overlay held prologues, gated by the same fingerprint as their
         // byte trampoline. Each carries a non-empty window (an empty one would
         // match unconditionally); the diff-gate test verifies that.

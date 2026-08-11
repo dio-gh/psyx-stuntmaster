@@ -24,6 +24,10 @@ struct Options {
     std::uint32_t presentation_rate{};
     std::uint32_t guest_cpu_scale{1U};
     std::uint32_t guest_update_rate{30U};
+    // Diagnostic correctness/performance controls. Normal execution uses the
+    // native recompiler; these selections are host acceleration state only.
+    bool interpreter_cpu{};
+    bool cached_recompiler_cpu{};
     bool probe_guest{};
     bool show_frame{};
     bool capture_frame{};

@@ -331,6 +331,32 @@ void commandLineOverridesPersistedLauncherSettings() {
     assert(!probe->retime_motion);
     assert(!probe->widescreen_cull);
 
+    std::array interpreter_arguments{
+        const_cast<char*>("stuntmaster-tests"),
+        const_cast<char*>("--game"),
+        const_cast<char*>("game.cue"),
+        const_cast<char*>("--probe-guest"),
+        const_cast<char*>("--interpreter-cpu"),
+    };
+    const auto interpreter = stuntmaster::app::parseOptions(
+        static_cast<int>(interpreter_arguments.size()),
+        interpreter_arguments.data());
+    assert(interpreter);
+    assert(interpreter->interpreter_cpu);
+
+    std::array cached_arguments{
+        const_cast<char*>("stuntmaster-tests"),
+        const_cast<char*>("--game"),
+        const_cast<char*>("game.cue"),
+        const_cast<char*>("--probe-guest"),
+        const_cast<char*>("--cached-recompiler-cpu"),
+    };
+    const auto cached = stuntmaster::app::parseOptions(
+        static_cast<int>(cached_arguments.size()), cached_arguments.data());
+    assert(cached);
+    assert(cached->cached_recompiler_cpu);
+    assert(!cached->interpreter_cpu);
+
     std::error_code ignored;
     std::filesystem::remove_all(directory, ignored);
 }

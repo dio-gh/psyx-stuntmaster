@@ -134,6 +134,20 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             const auto& executable_hash = loaded_game.executable_hash;
             const auto& executable = loaded_game.executable;
             stuntmaster::psx::R3000Runtime runtime;
+            if (options->interpreter_cpu) {
+                runtime.setExecutionBackend(
+                    stuntmaster::psx::R3000ExecutionBackend::interpreter);
+            } else if (options->cached_recompiler_cpu) {
+                runtime.setExecutionBackend(
+                    stuntmaster::psx::R3000ExecutionBackend::cached_recompiler);
+            }
+            std::cout << "cpu_backend="
+                      << (options->interpreter_cpu
+                              ? "interpreter"
+                              : (options->cached_recompiler_cpu
+                                     ? "cached_recompiler"
+                                     : "native_recompiler"))
+                      << '\n';
             std::vector<std::vector<std::uint32_t>> current_gpu_packets;
             std::vector<std::vector<std::uint32_t>> completed_gpu_packets;
             std::vector<stuntmaster::presentation::GpuReplaySegment>
@@ -3406,6 +3420,48 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                       << guest_batched_instructions
                       << " guest_idle_instructions="
                       << guest_idle_instructions << '\n';
+            const auto& recompiler_stats = runtime.recompilerStats();
+            std::cout << "guest_recompiler_blocks="
+                      << recompiler_stats.blocks_compiled
+                      << " guest_recompiler_instructions="
+                      << recompiler_stats.instructions_executed
+                      << " guest_recompiler_invalidations="
+                      << recompiler_stats.cache_invalidations
+                      << " guest_native_blocks="
+                      << recompiler_stats.native_blocks_compiled
+                      << " guest_native_regions="
+                      << recompiler_stats.native_regions_compiled
+                      << " guest_native_instructions="
+                      << recompiler_stats.native_instructions_executed
+                      << " guest_native_stores="
+                      << recompiler_stats.native_stores_executed
+                      << " guest_native_control_flows="
+                      << recompiler_stats.native_control_flows_executed
+                      << " guest_native_side_exits="
+                      << recompiler_stats.native_side_exits << '\n';
+            std::cout << "guest_native_fallback_opcodes=";
+            for (std::size_t opcode = 0U;
+                 opcode < recompiler_stats.native_fallback_opcodes.size();
+                 ++opcode) {
+                const auto count =
+                    recompiler_stats.native_fallback_opcodes[opcode];
+                if (count != 0U) {
+                    std::cout << std::hex << opcode << ':' << std::dec
+                              << count << ',';
+                }
+            }
+            std::cout << '\n' << "guest_native_fallback_functions=";
+            for (std::size_t function = 0U;
+                 function < recompiler_stats.native_fallback_functions.size();
+                 ++function) {
+                const auto count =
+                    recompiler_stats.native_fallback_functions[function];
+                if (count != 0U) {
+                    std::cout << std::hex << function << ':' << std::dec
+                              << count << ',';
+                }
+            }
+            std::cout << '\n';
             if (options->motion_trace) {
                 printMotionWatch(motion_watch, std::cout);
             }

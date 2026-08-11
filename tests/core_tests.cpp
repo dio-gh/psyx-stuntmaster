@@ -605,6 +605,784 @@ void r3000BatchStopsOnlyAtMachineBoundaries() {
     assert(runtime.state().gpr[3] == 7U);
 }
 
+void r3000RecompilerMatchesInterpreterAndInvalidatesCodeWrites() {
+    using stuntmaster::psx::R3000ExecutionBackend;
+    using stuntmaster::psx::R3000ExecutionBoundaries;
+    using stuntmaster::psx::R3000Runtime;
+    using stuntmaster::psx::R3000State;
+    using stuntmaster::psx::R3000StopReason;
+
+    constexpr std::uint32_t address = 0x80010000U;
+    constexpr std::uint32_t data_address = 0x80018000U;
+    const std::array code{
+        encodeI(0x0F, 0, 8, 0x8001),    // lui   $t0, 0x8001
+        encodeI(0x0D, 8, 8, 0x8000),    // ori   $t0, $t0, 0x8000
+        encodeI(0x09, 0, 9, 7),         // addiu $t1, $zero, 7
+        encodeI(0x2B, 8, 9, 0),         // sw    $t1, 0($t0)
+        encodeI(0x23, 8, 10, 0),        // lw    $t2, 0($t0)
+        std::uint32_t{0},                // load-delay slot
+        encodeI(0x09, 10, 10, 5),       // addiu $t2, $t2, 5
+        encodeR(9, 10, 0, 0, 0x18),     // mult  $t1, $t2
+        encodeI(0x05, 10, 9, 2),        // bne   $t2, $t1, return
+        encodeI(0x09, 0, 2, 1),         // delay slot: $v0 = 1
+        encodeI(0x09, 0, 2, 99),        // skipped
+        encodeR(31, 0, 16, 0, 0x12),    // mflo  $s0 (rd=16)
+        encodeR(31, 0, 0, 0, 0x08),     // jr    $ra
+        std::uint32_t{0},
+    };
+
+    const auto run = [&](R3000ExecutionBackend backend) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(address, std::as_bytes(std::span{code})));
+        runtime.reset(address, 0U, 0x801F0000U);
+        runtime.setRegister(31U, R3000Runtime::return_sentinel);
+        R3000ExecutionBoundaries boundaries;
+        const auto result = runtime.runBatch(64U, boundaries);
+        assert(result.reason == R3000StopReason::running);
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t stored{};
+        assert(runtime.read32(data_address, stored));
+        return std::tuple{runtime.state(), result.instructions, stored,
+                          runtime.recompilerStats()};
+    };
+
+    const auto [interpreted, interpreted_count, interpreted_store,
+                interpreted_stats] = run(R3000ExecutionBackend::interpreter);
+    const auto [recompiled, recompiled_count, recompiled_store,
+                recompiled_stats] = run(R3000ExecutionBackend::cached_recompiler);
+    const auto states_match = [](const R3000State& left, const R3000State& right) {
+        return left.gpr == right.gpr &&
+            left.gte.data == right.gte.data &&
+            left.gte.control == right.gte.control &&
+            left.cop0_status == right.cop0_status &&
+            left.cop0_cause == right.cop0_cause &&
+            left.cop0_epc == right.cop0_epc &&
+            left.cop0_bad_vaddr == right.cop0_bad_vaddr &&
+            left.hi == right.hi && left.lo == right.lo &&
+            left.pc == right.pc && left.next_pc == right.next_pc &&
+            left.branch_pc == right.branch_pc &&
+            left.branch_delay_slot == right.branch_delay_slot &&
+            left.load_delay.reg == right.load_delay.reg &&
+            left.load_delay.value == right.load_delay.value &&
+            left.load_delay.valid == right.load_delay.valid &&
+            left.next_load_delay.reg == right.next_load_delay.reg &&
+            left.next_load_delay.value == right.next_load_delay.value &&
+            left.next_load_delay.valid == right.next_load_delay.valid;
+    };
+    assert(states_match(interpreted, recompiled));
+    assert(interpreted_count == recompiled_count);
+    assert(interpreted_store == 7U && recompiled_store == interpreted_store);
+    assert(recompiled.gpr[10] == 12U);
+    assert(recompiled.gpr[16] == 84U);
+    assert(interpreted_stats.blocks_compiled == 0U);
+    assert(recompiled_stats.blocks_compiled != 0U);
+    assert(recompiled_stats.instructions_executed == recompiled_count);
+
+    // A hot two-block loop exercises the native tier after its lazy compile
+    // threshold. The load followed by dependent ALU operations pins R3000A
+    // load-delay semantics while the terminating store exercises the guarded
+    // direct-RAM write and host-side invalidation handoff.
+    constexpr std::uint32_t native_address = 0x80012000U;
+    constexpr std::uint32_t native_data_address = 0x80014000U;
+    const std::array native_code{
+        encodeI(0x09, 14, 14, 1),        // addiu $t6, $t6, 1
+        encodeI(0x23, 8, 9, 0),          // lw    $t1, 0($t0)
+        encodeI(0x09, 9, 10, 1),         // delay: $t2 = old $t1 + 1
+        encodeR(9, 10, 11, 0, 0x21),     // addu  $t3, $t1, $t2
+        encodeI(0x2B, 8, 11, 0),         // sw    $t3, 0($t0)
+        encodeI(0x09, 12, 12, 1),        // addiu $t4, $t4, 1
+        encodeI(0x0B, 12, 13, 100),      // sltiu $t5, $t4, 100
+        encodeI(0x05, 13, 0, 0xfff8),    // bne   $t5, $zero, loop
+        std::uint32_t{0},
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    const auto run_native_loop = [&](
+        R3000ExecutionBackend backend, std::uint32_t data_address) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            native_address, std::as_bytes(std::span{native_code})));
+        assert(runtime.write32(data_address, 5U));
+        runtime.reset(native_address, 0U, 0x801F0000U);
+        runtime.setRegister(8U, data_address);
+        runtime.setRegister(31U, R3000Runtime::return_sentinel);
+        R3000ExecutionBoundaries boundaries;
+        const auto result = runtime.runBatch(2'000U, boundaries);
+        assert(result.reason == R3000StopReason::running);
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t stored{};
+        assert(runtime.read32(data_address, stored));
+        return std::tuple{runtime.state(), result.instructions, stored,
+                          runtime.recompilerStats()};
+    };
+    const auto [native_interpreted, native_interpreted_count,
+                native_interpreted_store, native_interpreted_stats] =
+        run_native_loop(
+            R3000ExecutionBackend::interpreter, native_data_address);
+    const auto [native_recompiled, native_recompiled_count,
+                native_recompiled_store, native_stats] =
+        run_native_loop(
+            R3000ExecutionBackend::native_recompiler, native_data_address);
+    assert(states_match(native_interpreted, native_recompiled));
+    assert(native_interpreted_count == native_recompiled_count);
+    assert(native_interpreted_store == native_recompiled_store);
+    assert(native_stats.native_blocks_compiled != 0U);
+    assert(native_stats.native_regions_compiled != 0U);
+    assert(native_stats.native_instructions_executed != 0U);
+    assert(native_stats.native_stores_executed != 0U);
+    assert(native_stats.native_control_flows_executed != 0U);
+    assert(native_interpreted_stats.native_instructions_executed == 0U);
+    assert(native_interpreted_stats.native_stores_executed == 0U);
+    assert(native_interpreted_stats.native_control_flows_executed == 0U);
+
+    // Conditional branches execute together with their architectural delay
+    // slot. Exercise every first-stage condition in both directions after
+    // warming the exact block past the lazy native-compilation threshold.
+    constexpr std::uint32_t branch_address = 0x8001B000U;
+    const auto run_branch_case = [&] (
+        R3000ExecutionBackend backend, std::uint32_t branch,
+        std::uint32_t left, std::uint32_t right, bool warm) {
+        const std::array branch_code{
+            branch,                                 // target is instruction 5
+            encodeI(0x09, 10, 10, 1),              // delay: ++$t2
+            encodeI(0x09, 0, 2, 11),               // fall-through result
+            encodeR(18, 0, 0, 0, 0x08),            // jr $s2
+            std::uint32_t{0},
+            encodeI(0x09, 0, 2, 22),               // taken result
+            encodeR(18, 0, 0, 0, 0x08),            // jr $s2
+            std::uint32_t{0},
+        };
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            branch_address, std::as_bytes(std::span{branch_code})));
+        const auto invoke = [&] {
+            runtime.reset(branch_address, 0U, 0x801F0000U);
+            runtime.setRegister(8U, left);
+            runtime.setRegister(9U, right);
+            runtime.setRegister(18U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries boundaries;
+            const auto result = runtime.runBatch(32U, boundaries);
+            assert(result.reason == R3000StopReason::running);
+            assert(runtime.atReturnSentinel());
+            return result.instructions;
+        };
+        if (warm) {
+            for (auto iteration = 0U; iteration != 20U; ++iteration) {
+                static_cast<void>(invoke());
+            }
+        }
+        const auto count = invoke();
+        return std::tuple{
+            runtime.state(), count, runtime.recompilerStats()};
+    };
+    const auto compare_branch = [&] (
+        std::uint32_t instruction, std::uint32_t left,
+        std::uint32_t right, bool taken) {
+        const auto [branch_interpreted, branch_interpreted_count,
+                    branch_interpreted_stats] =
+            run_branch_case(
+                R3000ExecutionBackend::interpreter,
+                instruction, left, right, false);
+        const auto [branch_native, branch_native_count, branch_native_stats] =
+            run_branch_case(
+                R3000ExecutionBackend::native_recompiler,
+                instruction, left, right, true);
+        assert(states_match(branch_interpreted, branch_native));
+        assert(branch_interpreted_count == branch_native_count);
+        assert(branch_native.gpr[2] == (taken ? 22U : 11U));
+        assert(branch_native.gpr[10] == 1U);
+        const auto kind = (instruction >> 16U) & 31U;
+        if ((instruction >> 26U) == 0x01U && (kind & 0x10U) != 0U) {
+            assert(branch_native.gpr[31] == branch_address + 8U);
+        }
+        assert(branch_native_stats.native_control_flows_executed != 0U);
+        assert(branch_interpreted_stats.native_control_flows_executed == 0U);
+    };
+    compare_branch(encodeI(0x04, 8, 9, 4), 5U, 5U, true);   // beq
+    compare_branch(encodeI(0x04, 8, 9, 4), 5U, 6U, false);
+    compare_branch(encodeI(0x05, 8, 9, 4), 5U, 6U, true);   // bne
+    compare_branch(encodeI(0x05, 8, 9, 4), 5U, 5U, false);
+    compare_branch(encodeI(0x06, 8, 0, 4), 0U, 0U, true);   // blez
+    compare_branch(encodeI(0x06, 8, 0, 4), 1U, 0U, false);
+    compare_branch(encodeI(0x07, 8, 0, 4), 1U, 0U, true);   // bgtz
+    compare_branch(encodeI(0x07, 8, 0, 4), 0xffffffffU, 0U, false);
+    compare_branch(encodeI(0x01, 8, 0x00, 4), 0xffffffffU, 0U, true); // bltz
+    compare_branch(encodeI(0x01, 8, 0x00, 4), 0U, 0U, false);
+    compare_branch(encodeI(0x01, 8, 0x01, 4), 0U, 0U, true); // bgez
+    compare_branch(encodeI(0x01, 8, 0x01, 4), 0xffffffffU, 0U, false);
+    compare_branch(encodeI(0x01, 8, 0x10, 4), 0xffffffffU, 0U, true); // bltzal
+    compare_branch(encodeI(0x01, 8, 0x10, 4), 0U, 0U, false);
+    compare_branch(encodeI(0x01, 8, 0x11, 4), 0U, 0U, true); // bgezal
+    compare_branch(encodeI(0x01, 8, 0x11, 4), 0xffffffffU, 0U, false);
+
+    // Direct and indirect jump forms share the same delay-slot completion but
+    // have distinct link hazards. JALR captures its target before writing the
+    // custom link register; both subroutines return through their generated
+    // links, while the final JR uses a host-provided sentinel register.
+    constexpr std::uint32_t jump_address = 0x8001F000U;
+    constexpr auto encode_jump = [](std::uint32_t opcode,
+                                    std::uint32_t target) {
+        return (opcode << 26U) | ((target >> 2U) & 0x03ffffffU);
+    };
+    const std::array jump_code{
+        encode_jump(0x03U, jump_address + 32U),     // jal function A
+        encodeI(0x09, 8, 8, 1),                    // delay: ++$t0
+        encodeR(9, 0, 17, 0, 0x09),                // jalr $s1,$t1
+        encodeI(0x09, 8, 8, 1),                    // delay: ++$t0
+        encode_jump(0x02U, jump_address + 56U),     // j end
+        encodeI(0x09, 8, 8, 1),                    // delay: ++$t0
+        encodeI(0x09, 0, 2, 99),                   // skipped
+        std::uint32_t{0},
+        encodeI(0x09, 2, 2, 10),                   // function A
+        encodeR(31, 0, 0, 0, 0x08),                // jr $ra
+        encodeI(0x09, 8, 8, 1),                    // delay: ++$t0
+        encodeI(0x09, 2, 2, 20),                   // function B
+        encodeR(17, 0, 0, 0, 0x08),                // jr $s1
+        encodeI(0x09, 8, 8, 1),                    // delay: ++$t0
+        encodeR(18, 0, 0, 0, 0x08),                // end: jr $s2
+        std::uint32_t{0},
+    };
+    const auto run_jump_case = [&] (
+        R3000ExecutionBackend backend, bool warm) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            jump_address, std::as_bytes(std::span{jump_code})));
+        const auto invoke = [&] {
+            runtime.reset(jump_address, 0U, 0x801F0000U);
+            runtime.setRegister(9U, jump_address + 44U);
+            runtime.setRegister(18U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries boundaries;
+            const auto result = runtime.runBatch(64U, boundaries);
+            assert(result.reason == R3000StopReason::running);
+            assert(runtime.atReturnSentinel());
+            return result.instructions;
+        };
+        if (warm) {
+            for (auto iteration = 0U; iteration != 20U; ++iteration) {
+                static_cast<void>(invoke());
+            }
+        }
+        const auto count = invoke();
+        return std::tuple{
+            runtime.state(), count, runtime.recompilerStats()};
+    };
+    const auto [jump_interpreted, jump_interpreted_count,
+                jump_interpreted_stats] =
+        run_jump_case(R3000ExecutionBackend::interpreter, false);
+    const auto [jump_native, jump_native_count, jump_native_stats] =
+        run_jump_case(R3000ExecutionBackend::native_recompiler, true);
+    assert(states_match(jump_interpreted, jump_native));
+    assert(jump_interpreted_count == jump_native_count);
+    assert(jump_native.gpr[2] == 30U);
+    assert(jump_native.gpr[8] == 5U);
+    assert(jump_native.gpr[17] == jump_address + 16U);
+    assert(jump_native.gpr[31] == jump_address + 8U);
+    assert(jump_native_stats.native_control_flows_executed != 0U);
+    assert(jump_interpreted_stats.native_control_flows_executed == 0U);
+
+    // A load immediately before the branch becomes visible to its delay slot,
+    // but the branch condition itself must still observe the old register.
+    constexpr std::uint32_t branch_load_address = 0x8001C000U;
+    constexpr std::uint32_t branch_load_data = 0x8001D000U;
+    const std::array branch_load_code{
+        encodeI(0x23, 11, 8, 0),                // lw $t0, 0($t3)
+        encodeI(0x04, 8, 9, 4),                 // old $t0 == $t1
+        encodeR(8, 0, 10, 0, 0x21),             // delay sees loaded $t0
+        encodeI(0x09, 0, 2, 11),
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+        encodeI(0x09, 0, 2, 22),
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    const auto run_branch_load = [&] (
+        R3000ExecutionBackend backend, bool warm) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            branch_load_address,
+            std::as_bytes(std::span{branch_load_code})));
+        assert(runtime.write32(branch_load_data, 9U));
+        const auto invoke = [&] {
+            runtime.reset(branch_load_address, 0U, 0x801F0000U);
+            runtime.setRegister(8U, 7U);
+            runtime.setRegister(9U, 7U);
+            runtime.setRegister(11U, branch_load_data);
+            runtime.setRegister(31U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries boundaries;
+            const auto result = runtime.runBatch(32U, boundaries);
+            assert(result.reason == R3000StopReason::running);
+            assert(runtime.atReturnSentinel());
+            return result.instructions;
+        };
+        if (warm) {
+            for (auto iteration = 0U; iteration != 20U; ++iteration) {
+                static_cast<void>(invoke());
+            }
+        }
+        const auto count = invoke();
+        return std::tuple{
+            runtime.state(), count, runtime.recompilerStats()};
+    };
+    const auto [branch_load_interpreted, branch_load_interpreted_count,
+                branch_load_interpreted_stats] =
+        run_branch_load(R3000ExecutionBackend::interpreter, false);
+    const auto [branch_load_native, branch_load_native_count,
+                branch_load_native_stats] =
+        run_branch_load(R3000ExecutionBackend::native_recompiler, true);
+    assert(states_match(branch_load_interpreted, branch_load_native));
+    assert(branch_load_interpreted_count == branch_load_native_count);
+    assert(branch_load_native.gpr[2] == 22U);
+    assert(branch_load_native.gpr[8] == 9U);
+    assert(branch_load_native.gpr[10] == 9U);
+    assert(branch_load_native_stats.native_control_flows_executed != 0U);
+    assert(branch_load_interpreted_stats.native_control_flows_executed == 0U);
+
+    // A non-RAM load in the branch delay slot precisely exits after the
+    // branch. The portable retry must retain the selected target and execute
+    // the slot with branch_delay_slot set. A host boundary at the slot instead
+    // prevents the native pair from starting at all.
+    constexpr std::uint32_t branch_exit_address = 0x8001E000U;
+    constexpr std::uint32_t branch_exit_data = 0x1F800000U;
+    const std::array branch_exit_code{
+        encodeI(0x04, 0, 0, 3),                 // beq -> taken result
+        encodeI(0x23, 8, 10, 0),                // delay: scratchpad lw
+        encodeI(0x09, 0, 2, 11),
+        encodeR(31, 0, 0, 0, 0x08),
+        encodeI(0x09, 0, 2, 22),
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    const auto run_branch_exit = [&] (
+        R3000ExecutionBackend backend, bool stop_at_delay) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            branch_exit_address,
+            std::as_bytes(std::span{branch_exit_code})));
+        assert(runtime.write32(branch_exit_data, 0x12345678U));
+        const auto invoke = [&](bool boundary) {
+            runtime.reset(branch_exit_address, 0U, 0x801F0000U);
+            runtime.setRegister(8U, branch_exit_data);
+            runtime.setRegister(31U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries boundaries;
+            if (boundary) {
+                boundaries.add(branch_exit_address + 4U);
+            }
+            return runtime.runBatch(32U, boundaries);
+        };
+        for (auto iteration = 0U; iteration != 20U; ++iteration) {
+            const auto warm = invoke(false);
+            assert(warm.reason == R3000StopReason::running);
+            assert(runtime.atReturnSentinel());
+        }
+        const auto branches_before =
+            runtime.recompilerStats().native_control_flows_executed;
+        const auto result = invoke(stop_at_delay);
+        return std::tuple{runtime.state(), result, runtime.recompilerStats(),
+                          branches_before};
+    };
+    const auto [branch_exit_interpreted, branch_exit_interpreted_result,
+                branch_exit_interpreted_stats, branch_exit_unused] =
+        run_branch_exit(R3000ExecutionBackend::interpreter, false);
+    const auto [branch_exit_native, branch_exit_native_result,
+                branch_exit_native_stats, branch_exit_branches_before] =
+        run_branch_exit(R3000ExecutionBackend::native_recompiler, false);
+    assert(states_match(branch_exit_interpreted, branch_exit_native));
+    assert(branch_exit_interpreted_result.instructions ==
+           branch_exit_native_result.instructions);
+    assert(branch_exit_native.gpr[2] == 22U);
+    assert(branch_exit_native.gpr[10] == 0x12345678U);
+    assert(branch_exit_native_stats.native_side_exits != 0U);
+    assert(branch_exit_native_stats.native_control_flows_executed >
+           branch_exit_branches_before);
+    assert(branch_exit_interpreted_stats.native_control_flows_executed == 0U);
+    static_cast<void>(branch_exit_unused);
+
+    const auto [branch_boundary_state, branch_boundary_result,
+                branch_boundary_stats, branch_boundary_branches_before] =
+        run_branch_exit(R3000ExecutionBackend::native_recompiler, true);
+    assert(branch_boundary_result.reason == R3000StopReason::running);
+    assert(branch_boundary_result.instructions == 1U);
+    assert(branch_boundary_state.pc == branch_exit_address + 4U);
+    assert(branch_boundary_state.next_pc == branch_exit_address + 16U);
+    assert(branch_boundary_state.branch_pc == branch_exit_address);
+    assert(branch_boundary_state.branch_delay_slot);
+    assert(branch_boundary_stats.native_control_flows_executed ==
+           branch_boundary_branches_before);
+
+    const auto run_branch_delay_fault = [&] (
+        R3000ExecutionBackend backend) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            branch_exit_address,
+            std::as_bytes(std::span{branch_exit_code})));
+        assert(runtime.write32(branch_exit_data, 0x12345678U));
+        const auto invoke = [&](std::uint32_t data_address) {
+            runtime.reset(branch_exit_address, 0U, 0x801F0000U);
+            runtime.setRegister(8U, data_address);
+            runtime.setRegister(31U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries boundaries;
+            return runtime.runBatch(32U, boundaries);
+        };
+        if (backend == R3000ExecutionBackend::native_recompiler) {
+            for (auto iteration = 0U; iteration != 20U; ++iteration) {
+                const auto warm = invoke(branch_exit_data);
+                assert(warm.reason == R3000StopReason::running);
+                assert(runtime.atReturnSentinel());
+            }
+        }
+        const auto result = invoke(branch_exit_data + 1U);
+        return std::tuple{
+            runtime.state(), result, runtime.recompilerStats()};
+    };
+    const auto [branch_fault_interpreted, branch_fault_interpreted_result,
+                branch_fault_interpreted_stats] =
+        run_branch_delay_fault(R3000ExecutionBackend::interpreter);
+    const auto [branch_fault_native, branch_fault_native_result,
+                branch_fault_native_stats] =
+        run_branch_delay_fault(R3000ExecutionBackend::native_recompiler);
+    assert(states_match(branch_fault_interpreted, branch_fault_native));
+    assert(branch_fault_interpreted_result.reason ==
+           R3000StopReason::alignment_fault);
+    assert(branch_fault_native_result.reason ==
+           branch_fault_interpreted_result.reason);
+    assert(branch_fault_native_result.instructions ==
+           branch_fault_interpreted_result.instructions);
+    assert(branch_fault_native.branch_pc == branch_exit_address);
+    assert(branch_fault_native.pc == branch_exit_address + 16U);
+    assert(!branch_fault_native.branch_delay_slot);
+    assert(branch_fault_native_stats.native_side_exits != 0U);
+    assert(branch_fault_interpreted_stats.native_side_exits == 0U);
+
+    // All three aligned store widths lower directly for ordinary RAM. A
+    // scratchpad target side-exits before each store, and an installed write
+    // sink keeps stores on the portable path so diagnostics see every value.
+    constexpr std::uint32_t store_width_address = 0x80015000U;
+    constexpr std::uint32_t store_width_data = 0x80017000U;
+    constexpr std::uint32_t store_width_scratchpad = 0x1F800000U;
+    const std::array store_width_code{
+        encodeI(0x09, 14, 14, 1),        // addiu $t6, $t6, 1
+        encodeI(0x28, 8, 9, 0),          // sb    $t1, 0($t0)
+        encodeI(0x09, 14, 14, 1),        // addiu $t6, $t6, 1
+        encodeI(0x29, 8, 10, 2),         // sh    $t2, 2($t0)
+        encodeI(0x09, 14, 14, 1),        // addiu $t6, $t6, 1
+        encodeI(0x2B, 8, 11, 4),         // sw    $t3, 4($t0)
+        encodeI(0x09, 12, 12, 1),        // addiu $t4, $t4, 1
+        encodeI(0x0B, 12, 13, 100),      // sltiu $t5, $t4, 100
+        encodeI(0x05, 13, 0, 0xfff7),    // bne   $t5, $zero, loop
+        std::uint32_t{0},
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    const auto run_store_widths = [&] (
+        R3000ExecutionBackend backend,
+        std::uint32_t data_address,
+        bool trace_writes = false) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            store_width_address,
+            std::as_bytes(std::span{store_width_code})));
+        std::uint64_t sink_writes = 0U;
+        if (trace_writes) {
+            runtime.setMemoryWriteSink(
+                [&](std::uint32_t, std::uint32_t, std::uint32_t,
+                    std::uint32_t) { ++sink_writes; });
+        }
+        runtime.reset(store_width_address, 0U, 0x801F0000U);
+        runtime.setRegister(8U, data_address);
+        runtime.setRegister(9U, 0xA1B2C3D4U);
+        runtime.setRegister(10U, 0x55667788U);
+        runtime.setRegister(11U, 0x99AABBCCU);
+        runtime.setRegister(31U, R3000Runtime::return_sentinel);
+        R3000ExecutionBoundaries boundaries;
+        const auto result = runtime.runBatch(4'000U, boundaries);
+        assert(result.reason == R3000StopReason::running);
+        assert(runtime.atReturnSentinel());
+        std::array<std::byte, 8U> stored{};
+        assert(runtime.copyBytes(data_address, stored));
+        return std::tuple{runtime.state(), result.instructions, stored,
+                          runtime.recompilerStats(), sink_writes};
+    };
+    const std::array expected_store_bytes{
+        std::byte{0xD4}, std::byte{0x00}, std::byte{0x88}, std::byte{0x77},
+        std::byte{0xCC}, std::byte{0xBB}, std::byte{0xAA}, std::byte{0x99}};
+    const auto [width_interpreted, width_interpreted_count,
+                width_interpreted_bytes, width_interpreted_stats,
+                width_interpreted_sink] =
+        run_store_widths(
+            R3000ExecutionBackend::interpreter, store_width_data);
+    const auto [width_native, width_native_count, width_native_bytes,
+                width_native_stats, width_native_sink] =
+        run_store_widths(
+            R3000ExecutionBackend::native_recompiler, store_width_data);
+    assert(states_match(width_interpreted, width_native));
+    assert(width_interpreted_count == width_native_count);
+    assert(width_interpreted_bytes == expected_store_bytes);
+    assert(width_native_bytes == width_interpreted_bytes);
+    assert(width_native_stats.native_stores_executed != 0U);
+    assert(width_interpreted_stats.native_stores_executed == 0U);
+    assert(width_interpreted_sink == 0U && width_native_sink == 0U);
+
+    // Consecutive stores have no ALU prefix to satisfy the original native
+    // region's two-instruction minimum. Each width can stand alone because a
+    // successful store already returns to the host for code-page invalidation.
+    constexpr std::uint32_t isolated_store_address = 0x80020000U;
+    constexpr std::uint32_t isolated_store_data = 0x80021000U;
+    const std::array isolated_store_code{
+        encodeI(0x28, 8, 9, 0),          // sb $t1, 0($t0)
+        encodeI(0x29, 8, 10, 2),         // sh $t2, 2($t0)
+        encodeI(0x2B, 8, 11, 4),         // sw $t3, 4($t0)
+        encodeR(31, 0, 0, 0, 0x08),      // jr $ra
+        std::uint32_t{0},
+    };
+    const auto run_isolated_stores = [&] (
+        R3000ExecutionBackend backend, bool warm) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            isolated_store_address,
+            std::as_bytes(std::span{isolated_store_code})));
+        const auto invoke = [&] {
+            runtime.reset(isolated_store_address, 0U, 0x801F0000U);
+            runtime.setRegister(8U, isolated_store_data);
+            runtime.setRegister(9U, 0xA1B2C3D4U);
+            runtime.setRegister(10U, 0x55667788U);
+            runtime.setRegister(11U, 0x99AABBCCU);
+            runtime.setRegister(31U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries boundaries;
+            const auto result = runtime.runBatch(16U, boundaries);
+            assert(result.reason == R3000StopReason::running);
+            assert(runtime.atReturnSentinel());
+            return result.instructions;
+        };
+        if (warm) {
+            for (auto iteration = 0U; iteration != 20U; ++iteration) {
+                static_cast<void>(invoke());
+            }
+        }
+        const auto count = invoke();
+        std::array<std::byte, 8U> stored{};
+        assert(runtime.copyBytes(isolated_store_data, stored));
+        return std::tuple{
+            runtime.state(), count, stored, runtime.recompilerStats()};
+    };
+    const auto [isolated_interpreted, isolated_interpreted_count,
+                isolated_interpreted_bytes, isolated_interpreted_stats] =
+        run_isolated_stores(R3000ExecutionBackend::interpreter, false);
+    const auto [isolated_native, isolated_native_count,
+                isolated_native_bytes, isolated_native_stats] =
+        run_isolated_stores(R3000ExecutionBackend::native_recompiler, true);
+    assert(states_match(isolated_interpreted, isolated_native));
+    assert(isolated_interpreted_count == isolated_native_count);
+    assert(isolated_interpreted_bytes == expected_store_bytes);
+    assert(isolated_native_bytes == isolated_interpreted_bytes);
+    assert(isolated_native_stats.native_stores_executed >= 3U);
+    assert(isolated_interpreted_stats.native_stores_executed == 0U);
+
+    const auto [width_scratch_interpreted, width_scratch_interpreted_count,
+                width_scratch_interpreted_bytes,
+                width_scratch_interpreted_stats,
+                width_scratch_interpreted_sink] =
+        run_store_widths(
+            R3000ExecutionBackend::interpreter, store_width_scratchpad);
+    const auto [width_scratch_native, width_scratch_native_count,
+                width_scratch_native_bytes, width_scratch_native_stats,
+                width_scratch_native_sink] =
+        run_store_widths(
+            R3000ExecutionBackend::native_recompiler,
+            store_width_scratchpad);
+    assert(states_match(width_scratch_interpreted, width_scratch_native));
+    assert(width_scratch_interpreted_count == width_scratch_native_count);
+    assert(width_scratch_interpreted_bytes == expected_store_bytes);
+    assert(width_scratch_native_bytes == width_scratch_interpreted_bytes);
+    assert(width_scratch_native_stats.native_stores_executed == 0U);
+    assert(width_scratch_native_stats.native_side_exits != 0U);
+    assert(width_scratch_interpreted_stats.native_side_exits == 0U);
+    assert(width_scratch_interpreted_sink == 0U &&
+           width_scratch_native_sink == 0U);
+
+    const auto [width_traced, width_traced_count, width_traced_bytes,
+                width_traced_stats, width_traced_sink] =
+        run_store_widths(
+            R3000ExecutionBackend::native_recompiler,
+            store_width_data, true);
+    assert(states_match(width_interpreted, width_traced));
+    assert(width_interpreted_count == width_traced_count);
+    assert(width_traced_bytes == expected_store_bytes);
+    assert(width_traced_stats.native_stores_executed == 0U);
+    assert(width_traced_sink == 300U);
+
+    const auto run_unaligned_store = [&] (R3000ExecutionBackend backend) {
+        R3000Runtime runtime;
+        runtime.setExecutionBackend(backend);
+        assert(runtime.loadBytes(
+            store_width_address,
+            std::as_bytes(std::span{store_width_code})));
+        if (backend == R3000ExecutionBackend::native_recompiler) {
+            // Heat and lower the store regions with an aligned target first.
+            runtime.reset(store_width_address, 0U, 0x801F0000U);
+            runtime.setRegister(8U, store_width_data);
+            runtime.setRegister(9U, 0xA1B2C3D4U);
+            runtime.setRegister(10U, 0x55667788U);
+            runtime.setRegister(11U, 0x99AABBCCU);
+            runtime.setRegister(31U, R3000Runtime::return_sentinel);
+            R3000ExecutionBoundaries warm_boundaries;
+            const auto warm = runtime.runBatch(4'000U, warm_boundaries);
+            assert(warm.reason == R3000StopReason::running);
+            assert(runtime.atReturnSentinel());
+            assert(runtime.recompilerStats().native_stores_executed != 0U);
+        }
+        const std::array<std::byte, 8U> zeroes{};
+        assert(runtime.loadBytes(store_width_data, zeroes));
+        runtime.reset(store_width_address, 0U, 0x801F0000U);
+        runtime.setRegister(8U, store_width_data + 1U);
+        runtime.setRegister(9U, 0xA1B2C3D4U);
+        runtime.setRegister(10U, 0x55667788U);
+        runtime.setRegister(11U, 0x99AABBCCU);
+        runtime.setRegister(31U, R3000Runtime::return_sentinel);
+        R3000ExecutionBoundaries boundaries;
+        const auto result = runtime.runBatch(32U, boundaries);
+        std::array<std::byte, 8U> stored{};
+        assert(runtime.copyBytes(store_width_data, stored));
+        return std::tuple{runtime.state(), result, stored,
+                          runtime.recompilerStats()};
+    };
+    const auto [unaligned_interpreted, unaligned_interpreted_result,
+                unaligned_interpreted_bytes, unaligned_interpreted_stats] =
+        run_unaligned_store(R3000ExecutionBackend::interpreter);
+    const auto [unaligned_native, unaligned_native_result,
+                unaligned_native_bytes, unaligned_native_stats] =
+        run_unaligned_store(R3000ExecutionBackend::native_recompiler);
+    assert(states_match(unaligned_interpreted, unaligned_native));
+    assert(unaligned_interpreted_result.reason ==
+           R3000StopReason::alignment_fault);
+    assert(unaligned_native_result.reason ==
+           unaligned_interpreted_result.reason);
+    assert(unaligned_native_result.instructions ==
+           unaligned_interpreted_result.instructions);
+    assert(unaligned_native_bytes == unaligned_interpreted_bytes);
+    assert(unaligned_native_bytes[1] == std::byte{0xD4});
+    assert(unaligned_native_stats.native_side_exits != 0U);
+    assert(unaligned_interpreted_stats.native_side_exits == 0U);
+
+    // Scratchpad is intentionally outside the native tier's direct-RAM
+    // contract. The generated load must side-exit after its ALU prefix, then
+    // let the portable memory helper complete the instruction and its delay.
+    constexpr std::uint32_t scratchpad_data = 0x1f800000U;
+    const auto [scratch_interpreted, scratch_interpreted_count,
+                scratch_interpreted_store, scratch_interpreted_stats] =
+        run_native_loop(
+            R3000ExecutionBackend::interpreter, scratchpad_data);
+    const auto [scratch_recompiled, scratch_recompiled_count,
+                scratch_recompiled_store, scratch_stats] =
+        run_native_loop(
+            R3000ExecutionBackend::native_recompiler, scratchpad_data);
+    assert(states_match(scratch_interpreted, scratch_recompiled));
+    assert(scratch_interpreted_count == scratch_recompiled_count);
+    assert(scratch_interpreted_store == scratch_recompiled_store);
+    assert(scratch_stats.native_side_exits != 0U);
+    assert(scratch_interpreted_stats.native_side_exits == 0U);
+
+    // The store rewrites an instruction already present in the active block.
+    // The recompiler must stop using that block immediately, translate the new
+    // bytes, and execute 77 rather than the stale cached immediate 1.
+    constexpr std::uint32_t modifying_address = 0x80011000U;
+    constexpr auto replacement = encodeI(0x09, 0, 2, 77);
+    const std::array self_modifying{
+        encodeI(0x0F, 0, 8, 0x8001),
+        encodeI(0x0D, 8, 8, 0x1000),
+        encodeI(0x0F, 0, 9, static_cast<std::uint16_t>(replacement >> 16U)),
+        encodeI(0x0D, 9, 9, static_cast<std::uint16_t>(replacement)),
+        encodeI(0x2B, 8, 9, 24),        // rewrite instruction at +24
+        std::uint32_t{0},
+        encodeI(0x09, 0, 2, 1),         // becomes addiu $v0, $zero, 77
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    R3000Runtime modifying;
+    assert(modifying.loadBytes(
+        modifying_address, std::as_bytes(std::span{self_modifying})));
+    modifying.reset(modifying_address, 0U, 0x801F0000U);
+    modifying.setRegister(31U, R3000Runtime::return_sentinel);
+    R3000ExecutionBoundaries no_boundaries;
+    const auto modified = modifying.runBatch(64U, no_boundaries);
+    assert(modified.reason == R3000StopReason::running);
+    assert(modifying.atReturnSentinel());
+    assert(modifying.state().gpr[2] == 77U);
+    assert(modifying.recompilerStats().cache_invalidations != 0U);
+    assert(modifying.recompilerStats().blocks_compiled >= 2U);
+
+    // A hot native writer targeting a different cached code page reports the
+    // exact store address to the host. The target's generation changes before
+    // it can be dispatched again, so its replacement immediate is observed.
+    constexpr std::uint32_t native_target_address = 0x80019000U;
+    constexpr std::uint32_t native_writer_address = 0x8001A000U;
+    const std::array native_target_code{
+        encodeI(0x09, 0, 2, 1),
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    const std::array native_writer_code{
+        encodeI(0x09, 12, 12, 1),       // addiu $t4, $t4, 1
+        encodeI(0x2B, 8, 9, 0),         // sw    $t1, 0($t0)
+        encodeI(0x0B, 12, 13, 100),     // sltiu $t5, $t4, 100
+        encodeI(0x05, 13, 0, 0xfffc),   // bne   $t5, $zero, loop
+        std::uint32_t{0},
+        encodeR(31, 0, 0, 0, 0x08),
+        std::uint32_t{0},
+    };
+    R3000Runtime native_modifying;
+    native_modifying.setExecutionBackend(
+        R3000ExecutionBackend::native_recompiler);
+    assert(native_modifying.loadBytes(
+        native_target_address,
+        std::as_bytes(std::span{native_target_code})));
+    assert(native_modifying.loadBytes(
+        native_writer_address,
+        std::as_bytes(std::span{native_writer_code})));
+
+    // Fetching the target once marks its page as translated code.
+    native_modifying.reset(native_target_address, 0U, 0x801F0000U);
+    native_modifying.setRegister(31U, R3000Runtime::return_sentinel);
+    auto native_modified =
+        native_modifying.runBatch(16U, no_boundaries);
+    assert(native_modified.reason == R3000StopReason::running);
+    assert(native_modifying.atReturnSentinel());
+    assert(native_modifying.state().gpr[2] == 1U);
+
+    native_modifying.reset(native_writer_address, 0U, 0x801F0000U);
+    native_modifying.setRegister(8U, native_target_address);
+    native_modifying.setRegister(9U, replacement);
+    native_modifying.setRegister(31U, R3000Runtime::return_sentinel);
+    native_modified = native_modifying.runBatch(2'000U, no_boundaries);
+    assert(native_modified.reason == R3000StopReason::running);
+    assert(native_modifying.atReturnSentinel());
+    assert(native_modifying.recompilerStats().native_stores_executed != 0U);
+    assert(native_modifying.recompilerStats().cache_invalidations != 0U);
+
+    native_modifying.reset(native_target_address, 0U, 0x801F0000U);
+    native_modifying.setRegister(31U, R3000Runtime::return_sentinel);
+    native_modified = native_modifying.runBatch(16U, no_boundaries);
+    assert(native_modified.reason == R3000StopReason::running);
+    assert(native_modifying.atReturnSentinel());
+    assert(native_modifying.state().gpr[2] == 77U);
+
+    // A quick-save candidate copies architectural machine state, never stale
+    // translations or diagnostic counters from the abandoned host timeline.
+    const R3000Runtime copied = modifying;
+    assert(copied.state().gpr == modifying.state().gpr);
+    assert(copied.recompilerStats().blocks_compiled == 0U);
+}
+
 void gteNormalColorSingle() {
     stuntmaster::psx::GteState state;
     constexpr std::uint32_t identity_diagonal = 0x00001000U;
@@ -3248,10 +4026,10 @@ void retimeOverlayHooksActivatePerFingerprint() {
     using Runtime = stuntmaster::psx::R3000Runtime;
     using stuntmaster::game::RetimeHook;
     const auto overlays = stuntmaster::game::retimeOverlayHooks();
-    // The fifteen recompute/gate hooks, the seventeen overlay held prologues,
+    // The sixteen recompute/gate hooks, the seventeen overlay held prologues,
     // and the thirteen Platform divide-based conversion hooks (including the
     // carried-velocity snapshot and bobbed-Y preservation).
-    assert(overlays.size() == 45U);
+    assert(overlays.size() == 46U);
     for (std::size_t index = 1U; index < overlays.size(); ++index) {
         assert(overlays[index - 1U].hook.pc < overlays[index].hook.pc);
     }
@@ -3365,13 +4143,9 @@ void butchStompEventCounterUsesTheAuthoredClock() {
         runtime.setRegister(2, old_counter); // $v0 = old counter
         runtime.setRegister(4, butch);       // $a0 = Butch
         runtime.setRegister(31, Runtime::return_sentinel);
-        for (int executed = 0; executed < 16; ++executed) {
-            if (runtime.atReturnSentinel()) {
-                break;
-            }
-            const auto step = runtime.step();
-            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
-        }
+        stuntmaster::psx::R3000ExecutionBoundaries boundaries;
+        const auto batch = runtime.runBatch(16U, boundaries);
+        assert(batch.reason == stuntmaster::psx::R3000StopReason::running);
         assert(runtime.atReturnSentinel());
         std::uint32_t counter = 0U;
         assert(runtime.read32(butch + counter_offset, counter));
@@ -4412,6 +5186,81 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
         assert(runtime.read32(humanoid + 0x170U, context));
         assert((context & 8U) != 0U); // fire contact re-issued on held
     }
+}
+
+void conveyorCarryRunsOnlyOnAuthoredUpdates() {
+    using Runtime = stuntmaster::psx::R3000Runtime;
+    using stuntmaster::game::RetimeHook;
+    using stuntmaster::game::RetimeHooks;
+
+    constexpr std::uint32_t site = 0x8001C2DCU;
+    constexpr std::uint32_t rejoin = 0x8001C2E4U;
+    constexpr std::uint32_t humanoid = 0x80121000U;
+    constexpr std::uint32_t result = 0x80122000U;
+    constexpr std::uint32_t stack = 0x801F0000U;
+
+    const auto overlays = stuntmaster::game::retimeOverlayHooks();
+    const auto found = std::find_if(
+        overlays.begin(), overlays.end(), [](const auto& overlay) {
+            return overlay.hook.pc == site;
+        });
+    assert(found != overlays.end());
+    const std::array<RetimeHook, 1U> span{found->hook};
+
+    // The real hook site is Conveyor::HandleHumanoidCollision's first load
+    // after its frame setup. The synthetic rejoin publishes the loaded flags,
+    // standing in for the direct position-add body that follows in retail.
+    const std::array<std::uint32_t, 2U> site_words{
+        encodeI(0x23, 4, 2, 0x58), // lw $v0,0x58($a0), hooked
+        0U,                        // nop, delay slot
+    };
+    const std::array<std::uint32_t, 4U> rejoin_words{
+        encodeI(0x2B, 8, 2, 0),     // sw $v0,0($t0)
+        encodeR(31, 0, 0, 0, 0x08), // jr $ra
+        0U,
+        0U,
+    };
+
+    const auto run = [&](std::uint32_t divisor, bool held) {
+        Runtime runtime;
+        RetimeHooks hooks{span};
+        assert(runtime.loadBytes(
+            site, std::as_bytes(std::span{site_words})));
+        assert(runtime.loadBytes(
+            rejoin, std::as_bytes(std::span{rejoin_words})));
+        assert(runtime.write32(humanoid + 0x58U, 0x1187CU));
+        assert(runtime.write32(result, 0U));
+        hooks.program(divisor);
+        hooks.state().advance_this_step_ = !held;
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(4, humanoid); // $a0 after the handler's two moves
+        runtime.setRegister(8, result);   // $t0, synthetic result address
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 16; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t stored = 0U;
+        assert(runtime.read32(result, stored));
+        return std::array<std::uint32_t, 2U>{
+            stored, runtime.state().gpr[29]};
+    };
+
+    // The AS_Run held-update contact pass reaches the handler but returns
+    // before its full authored-frame carry. Counted and retail calls continue.
+    assert((run(2U, true) ==
+            std::array<std::uint32_t, 2U>{0U, stack + 0x28U}));
+    assert((run(2U, false) ==
+            std::array<std::uint32_t, 2U>{0x1187CU, stack}));
+    assert((run(1U, false) ==
+            std::array<std::uint32_t, 2U>{0x1187CU, stack}));
 }
 
 void runningDynamicPassengerDoesNotAccumulateGravity() {
@@ -5477,6 +6326,7 @@ int main() {
     sha256AndGameIdentity();
     r3000Execution();
     r3000BatchStopsOnlyAtMachineBoundaries();
+    r3000RecompilerMatchesInterpreterAndInvalidatesCodeWrites();
     gteNormalColorSingle();
     biosCompatibilityDataIsReadOnly();
     gpuMmioSeparatesCommandsFromStatus();
@@ -5508,6 +6358,7 @@ int main() {
     ledgeTraceReportsWhichConditionRejectedTheLedge();
     ledgeTraceDoesNotChangeWhatLedgeCheckDecides();
     obstacleCollisionGateServicesContactsThatCannotWait();
+    conveyorCarryRunsOnlyOnAuthoredUpdates();
     runningDynamicPassengerDoesNotAccumulateGravity();
     poleSwingTimelineGateHoldsOnlyTheAccumulation();
     ladderStateHooksKeepAuthoredCadence();
