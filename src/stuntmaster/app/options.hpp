@@ -1,5 +1,7 @@
 #pragma once
 
+#include "launcher_settings.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -13,6 +15,11 @@ struct Options {
     std::filesystem::path memory_card;
     std::filesystem::path load_quick_save;
     std::filesystem::path launcher_settings_path;
+    // The per-user data root (config, saves, logs, input.ini). The running game
+    // resolves it to <Documents>\Stuntmaster; --data-root overrides that. Empty
+    // only when a caller (unit tests) injects no root, which keeps outputs
+    // relative to the working directory.
+    std::filesystem::path data_root;
     std::uint64_t guest_budget{1'000'000U};
     std::uint32_t window_width{1280U};
     std::uint32_t window_height{720U};
@@ -28,6 +35,10 @@ struct Options {
     // native recompiler; these selections are host acceleration state only.
     bool interpreter_cpu{};
     bool cached_recompiler_cpu{};
+    // Start in borderless fullscreen. Off by default so headless/diagnostic
+    // runs stay windowed; the live paths (persisted config and first-launch
+    // setup) turn it on.
+    bool fullscreen{};
     bool probe_guest{};
     bool show_frame{};
     bool capture_frame{};
@@ -104,6 +115,7 @@ struct Options {
     bool have_guest_cpu_scale{};
     bool have_guest_update_rate{};
     bool have_launcher_settings_path{};
+    bool have_data_root{};
 };
 
 // F7 and the Display menu can request the supported 60 Hz schedule whenever
@@ -113,6 +125,25 @@ struct Options {
     const Options& options) noexcept {
     return options.retime_motion && options.retime_clock;
 }
+
+// True when the real game executable was launched with a per-user data root but
+// no disc to run and no headless/diagnostic mode -- an ordinary double-click
+// with no game configured yet. The application then prompts for the game folder
+// (see game_setup.hpp). Helper/probe binaries (empty data_root) and any explicit
+// headless mode never prompt.
+[[nodiscard]] inline bool needsInteractiveGameSetup(
+    const Options& options) noexcept {
+    return !options.data_root.empty() && options.game.empty() &&
+        !options.probe_guest && !options.show_frame &&
+        !options.capture_frame && !options.have_replay_capture;
+}
+
+// Apply a live run's display settings unconditionally: widescreen, fullscreen,
+// render/window size (native desktop resolution when the config stores 0/0),
+// and 60 fps retiming. Used by the first-launch setup, where no command-line
+// display overrides are present. Also sets run_live.
+void applyLiveDisplaySettings(
+    Options& options, const LauncherSettings& settings);
 
 [[nodiscard]] constexpr std::uint32_t presentationRateForDisplay(
     const Options& options,
@@ -133,11 +164,12 @@ void usage();
 
 std::optional<Options> parseOptions(int argc, char** argv);
 
-// Testable entry point for the launcher's persisted defaults. The normal
-// overload reads stuntmaster.ini beside the running executable.
+// Testable entry point that injects the launcher-settings path directly instead
+// of resolving <Documents>\Stuntmaster. Pass std::nullopt to run with no
+// per-user data root at all (outputs stay relative to the working directory).
 std::optional<Options> parseOptions(
     int argc,
     char** argv,
-    const std::filesystem::path& launcher_settings_path);
+    const std::optional<std::filesystem::path>& launcher_settings_path);
 
 } // namespace stuntmaster::app

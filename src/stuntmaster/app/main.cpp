@@ -1,10 +1,14 @@
 #include "diagnostics.hpp"
 #include "frame_io.hpp"
+#include "game_setup.hpp"
 #include "gpu_frame.hpp"
 #include "launcher_settings.hpp"
+#include "licenses.hpp"
+#include "logging.hpp"
 #include "movie_request_bridge.hpp"
 #include "options.hpp"
 #include "quick_save.hpp"
+#include "user_paths.hpp"
 
 #include "stuntmaster/core/bounded_latest_mailbox.hpp"
 #include "stuntmaster/core/audio_ring.hpp"
@@ -812,9 +816,15 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         }
                     });
             }
+            // All user data lives under the resolved data root
+            // (<Documents>\Stuntmaster by default). Helper/probe binaries with
+            // no data root keep the historical working-directory "saves" folder.
+            const std::filesystem::path saves_dir = options->data_root.empty()
+                ? std::filesystem::path{"saves"}
+                : userPathsForRoot(options->data_root).saves;
             const auto memory_card_path = options->have_memory_card
                 ? options->memory_card
-                : std::filesystem::path{"saves"} / "SLUS-00684.mcr";
+                : saves_dir / "SLUS-00684.mcr";
             stuntmaster::psx::MemoryCard memory_card{memory_card_path};
             std::cout << "memory_card=" << memory_card_path.string() << '\n';
             stuntmaster::psx::BiosHle bios{
@@ -862,7 +872,19 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     options->window_height,
                     options->render_width,
                     options->render_height,
-                    options->frame_capture_trace);
+                    options->frame_capture_trace,
+                    /*hidden_window=*/false,
+                    options->fullscreen);
+                // Hand the embedded license texts to the host license viewer
+                // (opened by the in-game menu or the 'L' key).
+                std::vector<stuntmaster::presentation::LicenseDocument>
+                    license_documents;
+                for (const auto& license : embeddedLicenses()) {
+                    license_documents.push_back(
+                        {license.name, std::string{license.text}});
+                }
+                live_presenter->setLicenseDocuments(
+                    std::move(license_documents));
                 if (!options->have_presentation_rate) {
                     presentation_rate = presentationRateForDisplay(
                         *options, live_presenter->displayRefreshRate());
@@ -1048,6 +1070,9 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             std::atomic<bool> retime_toggle_requested{};
             std::atomic<bool> widescreen_toggle_requested{};
             std::atomic<std::uint32_t> host_menu_update_rate_requested{};
+            // The in-game "LEGAL" row opens the host license viewer, which the
+            // main thread owns; the worker only raises this request.
+            std::atomic<bool> host_menu_show_licenses_requested{};
             // Guest-menu callbacks publish render changes back to the worker
             // first. It updates the aspect-dependent reversible patches at a
             // VBlank boundary before the main thread reallocates the target.
@@ -1065,10 +1090,15 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             // High dword: selected resolution height. Low bits: 60 Hz and
             // widescreen. The main thread owns filesystem persistence.
             std::atomic<std::uint64_t> runtime_launcher_settings_requested{};
+            // The explicit render width is published separately; the packed
+            // request above only had room for the height and the two flags.
+            std::atomic<std::uint32_t> runtime_render_width_requested{};
             const auto requestLauncherSettingsPersistence = [&]() {
                 if (!options->have_launcher_settings_path) {
                     return;
                 }
+                runtime_render_width_requested.store(
+                    current_render_width, std::memory_order_release);
                 const auto packed =
                     (static_cast<std::uint64_t>(current_render_height) << 32U) |
                     (high_frequency_requested ? 1U : 0U) |
@@ -1111,6 +1141,12 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                                 std::memory_order_release);
                             return;
                         }
+                        if (event.command == stuntmaster::game::
+                                HostMenuCommand::show_licenses) {
+                            host_menu_show_licenses_requested.store(
+                                true, std::memory_order_release);
+                            return;
+                        }
                         const auto packed =
                             (static_cast<std::uint64_t>(event.width) << 32U) |
                             event.height;
@@ -1143,7 +1179,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     flags,
                 };
             };
-            const auto default_quick_save_path = defaultQuickSavePath();
+            const auto default_quick_save_path = defaultQuickSavePath(saves_dir);
             std::uint64_t probe_instruction_origin = 0U;
 
             // A save file is built and applied only on the guest worker. The
@@ -1832,7 +1868,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 } else if (
                     (requests & timestamped_quick_save_requested) != 0U) {
                     try {
-                        saveQuickSave(timestampedQuickSavePath());
+                        saveQuickSave(timestampedQuickSavePath(saves_dir));
                         quick_save_notification.store(
                             QuickSaveNotification::timestamped_save_created,
                             std::memory_order_release);
@@ -2899,8 +2935,69 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     };
                 updateDebugOverlay(nullptr, high_frequency_active);
                 std::jthread guest_worker{run_guest_guarded};
+                // Main-thread persistence cache. The worker publishes render
+                // size + patch flags on change; fullscreen is observed here
+                // (Alt+Enter is handled inside PsyCross). Any change re-saves
+                // the complete config so a partial update never drops a field.
+                std::uint32_t persisted_render_width = options->render_width;
+                std::uint32_t persisted_render_height = options->render_height;
+                bool persisted_sixty = options->guest_update_rate >= 60U;
+                bool persisted_widescreen = options->widescreen_cull;
+                bool persisted_fullscreen = options->fullscreen;
+                // The windowed size the config records. A runtime window resize
+                // updates this once the drag settles (see below) so the chosen
+                // size is restored on the next launch.
+                std::uint32_t persisted_window_width = options->window_width;
+                std::uint32_t persisted_window_height = options->window_height;
+                std::uint32_t last_seen_window_width = options->window_width;
+                std::uint32_t last_seen_window_height = options->window_height;
+                const auto persistLauncherSettings = [&]() {
+                    if (!options->have_launcher_settings_path) {
+                        return;
+                    }
+                    std::error_code path_error;
+                    auto game_path = std::filesystem::absolute(
+                        options->game, path_error);
+                    if (path_error) {
+                        game_path = options->game;
+                    }
+                    std::string settings_error;
+                    if (!saveRuntimeLauncherSettings(
+                            options->launcher_settings_path,
+                            game_path.parent_path(),
+                            persisted_render_width,
+                            persisted_render_height,
+                            persisted_window_width,
+                            persisted_window_height,
+                            persisted_sixty,
+                            persisted_widescreen,
+                            persisted_fullscreen,
+                            settings_error)) {
+                        std::cerr << "launcher_settings=save_failed: "
+                                  << settings_error << '\n';
+                    } else {
+                        std::cout << "launcher_settings=saved\n";
+                    }
+                };
+                // Persist a fullscreen toggle the instant it happens, on the
+                // poll thread. The main persistence loop below is suspended for
+                // the whole of an FMV (movies play on this thread), and a window
+                // close hard-exits from PsyCross's event pump without returning
+                // here, so a toggle made during a movie -- or just before
+                // closing -- would otherwise never be written.
+                live_presenter->setFullscreenChangedCallback(
+                    [&persisted_fullscreen, &persistLauncherSettings](bool fs) {
+                        if (fs != persisted_fullscreen) {
+                            persisted_fullscreen = fs;
+                            persistLauncherSettings();
+                        }
+                    });
                 while (!guest_finished.load(std::memory_order_acquire)) {
                     auto now = HostClock::now();
+                    if (host_menu_show_licenses_requested.exchange(
+                            false, std::memory_order_acq_rel)) {
+                        live_presenter->openLicenseViewer();
+                    }
                     const auto requested_render_size =
                         host_menu_render_size_requested.exchange(
                             0U, std::memory_order_acq_rel);
@@ -2922,27 +3019,45 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         runtime_launcher_settings_requested.exchange(
                             0U, std::memory_order_acq_rel);
                     if (requested_launcher_settings != 0U) {
-                        const auto height = static_cast<std::uint32_t>(
+                        persisted_render_height = static_cast<std::uint32_t>(
                             requested_launcher_settings >> 32U);
-                        std::error_code path_error;
-                        auto game_path = std::filesystem::absolute(
-                            options->game, path_error);
-                        if (path_error) {
-                            game_path = options->game;
+                        persisted_render_width =
+                            runtime_render_width_requested.load(
+                                std::memory_order_acquire);
+                        persisted_sixty =
+                            (requested_launcher_settings & 1U) != 0U;
+                        persisted_widescreen =
+                            (requested_launcher_settings & 2U) != 0U;
+                        persistLauncherSettings();
+                    }
+                    // Persist a runtime fullscreen toggle (Alt+Enter, handled
+                    // inside PsyCross) so the next launch restores it.
+                    const bool current_fullscreen =
+                        live_presenter->isFullscreen();
+                    if (current_fullscreen != persisted_fullscreen) {
+                        persisted_fullscreen = current_fullscreen;
+                        persistLauncherSettings();
+                    }
+                    // Persist a runtime window resize once the drag settles.
+                    // The presenter reports the last windowed size; requiring it
+                    // to hold steady for one iteration before saving avoids
+                    // rewriting the config on every intermediate drag size.
+                    if (!current_fullscreen) {
+                        const auto window_width =
+                            live_presenter->windowedWidth();
+                        const auto window_height =
+                            live_presenter->windowedHeight();
+                        if (window_width == last_seen_window_width &&
+                            window_height == last_seen_window_height &&
+                            (window_width != persisted_window_width ||
+                             window_height != persisted_window_height) &&
+                            window_width > 0U && window_height > 0U) {
+                            persisted_window_width = window_width;
+                            persisted_window_height = window_height;
+                            persistLauncherSettings();
                         }
-                        std::string settings_error;
-                        if (!saveRuntimeLauncherSettings(
-                                options->launcher_settings_path,
-                                game_path.parent_path(),
-                                height,
-                                (requested_launcher_settings & 1U) != 0U,
-                                (requested_launcher_settings & 2U) != 0U,
-                                settings_error)) {
-                            std::cerr << "launcher_settings=save_failed: "
-                                      << settings_error << '\n';
-                        } else {
-                            std::cout << "launcher_settings=saved\n";
-                        }
+                        last_seen_window_width = window_width;
+                        last_seen_window_height = window_height;
                     }
                     switch (quick_save_notification.exchange(
                         QuickSaveNotification::none,
@@ -3853,6 +3968,32 @@ int runApplication(const Options& options) {
         return 0;
     }
 
+    // Create the per-user data directories up front so the config, saves, and
+    // logs have somewhere to land. Non-fatal: a failure here surfaces again as
+    // a concrete write error at the relevant boundary.
+    if (!options.data_root.empty()) {
+        const auto user_paths = userPathsForRoot(options.data_root);
+        std::string directory_error;
+        if (!ensureUserDirectories(user_paths, directory_error)) {
+            std::cerr << "stuntmaster: " << directory_error << '\n';
+        }
+        // Seed an editable input.ini from the embedded default on first run, so
+        // bindings are user-editable and the configured path exists.
+        std::error_code input_exists_error;
+        if (!std::filesystem::exists(
+                user_paths.input_config, input_exists_error)) {
+            const auto defaults = embeddedDefaultInputConfig();
+            if (!defaults.empty()) {
+                std::ofstream input_output{
+                    user_paths.input_config,
+                    std::ios::binary | std::ios::trunc};
+                input_output.write(
+                    defaults.data(),
+                    static_cast<std::streamsize>(defaults.size()));
+            }
+        }
+    }
+
     auto loaded_game = loadGame(options);
     if (options.probe_guest || options.run_live) {
         runGuestSession(options, loaded_game);
@@ -3866,16 +4007,37 @@ int runApplication(const Options& options) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Decide console vs. log-file behaviour before any output. A bare
+    // double-click logs to the per-user file and shows no console; anything
+    // with arguments (probes, CLI) keeps stdout.
+    configureConsoleAndLogging(argc);
     if (argc == 2 && std::string_view{argv[1]} == "--help") {
         usage();
         return 0;
     }
-    const auto options = parseOptions(argc, argv);
+    if (argc == 2 && std::string_view{argv[1]} == "--licenses") {
+        // List the license texts embedded in the executable. Also the headless
+        // check that resource embedding succeeded.
+        for (const auto& license : embeddedLicenses()) {
+            std::cout << license.name << " (" << license.text.size()
+                      << " bytes)\n";
+        }
+        return 0;
+    }
+    auto options = parseOptions(argc, argv);
     if (!options) {
         usage();
         return 2;
     }
     try {
+        // A normal launch with no game configured yet (typically a first-run
+        // double-click) prompts the user to pick their disc folder before
+        // anything else. Headless/diagnostic modes never reach this.
+        if (needsInteractiveGameSetup(*options)) {
+            if (!resolveGameInteractively(*options)) {
+                return 0;
+            }
+        }
         return runApplication(*options);
     } catch (const std::exception& error) {
         std::cerr << "stuntmaster: error: " << error.what() << '\n';

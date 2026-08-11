@@ -12,6 +12,7 @@
 #include "stuntmaster/presentation/gpu_publication.hpp"
 #include "stuntmaster/presentation/debug_overlay.hpp"
 #include "stuntmaster/presentation/display_scaling.hpp"
+#include "stuntmaster/presentation/license_overlay.hpp"
 #include "stuntmaster/presentation/widescreen_overlay.hpp"
 #include "stuntmaster/psx/bios_hle.hpp"
 #include "stuntmaster/psx/executable.hpp"
@@ -6382,6 +6383,80 @@ void platformConversionHooksSubStepTheRateSensitiveQuantities() {
 
 } // namespace
 
+void licenseOverlayWrapsFoldsAndPaginates() {
+    using stuntmaster::presentation::LicenseDocument;
+    using stuntmaster::presentation::LicenseOverlay;
+    using stuntmaster::presentation::wrapLicenseText;
+
+    // Word wrap folds to uppercase, collapses spaces, and never exceeds width.
+    const auto wrapped = wrapLicenseText(
+        "The quick brown fox\njumps over  the lazy dog.", 10U);
+    for (const auto& line : wrapped) {
+        assert(line.size() <= 10U);
+        for (const auto character : line) {
+            assert(character < 'a' || character > 'z');
+        }
+    }
+    // A single newline is a hard line break (two non-empty rows, no gap); an
+    // empty source line (blank line) is preserved as a blank row.
+    const auto paragraphs = wrapLicenseText("ALPHA\n\nBETA", 10U);
+    assert(paragraphs.size() == 3U);
+    assert(paragraphs[0] == "ALPHA");
+    assert(paragraphs[1].empty());
+    assert(paragraphs[2] == "BETA");
+
+    // A word longer than the column width is hard-split, not dropped.
+    const auto split = wrapLicenseText("SUPERCALIFRAGILISTIC", 5U);
+    assert(split.size() == 4U);
+    for (const auto& line : split) {
+        assert(line.size() <= 5U);
+    }
+    assert(split.front() == "SUPER");
+
+    // Zero columns yields nothing rather than looping forever.
+    assert(wrapLicenseText("anything", 0U).empty());
+
+    // The viewer: a header row plus exactly (rows-1) body rows, scrolling
+    // clamped at both ends, and document cycling that resets the scroll.
+    std::string body;
+    for (int line = 0; line < 100; ++line) {
+        body += "LINE " + std::to_string(line) + "\n";
+    }
+    LicenseOverlay overlay{std::vector<LicenseDocument>{
+        {"First", body}, {"Second", "SHORT BODY"}}};
+    overlay.setViewport(40U, 10U);
+    assert(overlay.documentCount() == 2U);
+    assert(overlay.visibleRows().size() == 10U);
+    // Header carries the document counter and the visible line range.
+    assert(overlay.visibleRows().front().find("DOC 1/2") != std::string::npos);
+    // Every row is padded to a constant width so the rendered panel does not
+    // resize as different-length lines scroll through it.
+    for (const auto& row : overlay.visibleRows()) {
+        assert(row.size() == 40U);
+    }
+    overlay.scrollPages(1);
+    for (const auto& row : overlay.visibleRows()) {
+        assert(row.size() == 40U);
+    }
+    overlay.home();
+
+    assert(overlay.topLine() == 0U);
+    overlay.scrollLines(-5);
+    assert(overlay.topLine() == 0U); // clamped at the top
+    overlay.scrollPages(1000);
+    const auto max_top = overlay.topLine();
+    assert(max_top > 0U);
+    assert(max_top + (10U - 1U) >= overlay.lineCount()); // clamped at the end
+    overlay.scrollLines(10000);
+    assert(overlay.topLine() == max_top); // still clamped
+
+    overlay.nextDocument();
+    assert(overlay.documentIndex() == 1U);
+    assert(overlay.topLine() == 0U); // scroll resets across documents
+    overlay.previousDocument();
+    assert(overlay.documentIndex() == 0U);
+}
+
 int main() {
     // A taken branch must execute its delay slot before the target; the
     // retime hooks rely on this ordering (a hook site that is another
@@ -6410,6 +6485,7 @@ int main() {
         runtime.settleLoadDelay();
         assert(runtime.state().gpr[3] == 0x112U); // delay slot ran first
     }
+    licenseOverlayWrapsFoldsAndPaginates();
     stoppedFlipPublicationsAreVBlankBoundedAndSelfContained();
     guestScheduleDerivesEveryRateFromRetail();
     highFrequencyCadenceUsesRetailGameStateNotGpuTraffic();

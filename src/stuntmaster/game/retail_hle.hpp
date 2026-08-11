@@ -44,6 +44,7 @@ enum class HostMenuCommand : std::uint8_t {
     guest_update_rate,
     render_size,
     widescreen_cull,
+    show_licenses,
 };
 
 struct HostMenuEvent {
@@ -260,6 +261,17 @@ private:
     [[nodiscard]] RetailHleResult dispatchHostMenuCallback(
         psx::R3000Runtime& runtime);
     [[nodiscard]] RetailHleResult inspectHostMenuPush(
+        psx::R3000Runtime& runtime);
+    // Splice a native, game-rendered "LICENSES" row into the pause MAIN MENU
+    // (Menu_Title). Relocates the menu's text-prim overlay into the reserved
+    // menu-object arena with one extra slot, clones a title text object for the
+    // new label, and repoints the section/overlay-inventory and owning
+    // xcScreen so the retail renderer draws it. Idempotent per menu instance.
+    [[nodiscard]] bool ensureLicensesMenuItem(
+        psx::R3000Runtime& runtime, std::uint32_t manager);
+    // Pre-hook on MenuMgr::SetTopMenu: injects the Licenses row as the pause
+    // menu's root is established, so it is present on the first pause-open.
+    [[nodiscard]] RetailHleResult injectLicensesOnSetTopMenu(
         psx::R3000Runtime& runtime);
     [[nodiscard]] RetailHleResult aliasHostMenuScreen(
         psx::R3000Runtime& runtime);

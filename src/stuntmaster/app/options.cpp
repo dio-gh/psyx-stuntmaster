@@ -1,5 +1,6 @@
 #include "options.hpp"
 #include "launcher_settings.hpp"
+#include "user_paths.hpp"
 
 #include "stuntmaster/game/guest_schedule.hpp"
 
@@ -107,6 +108,7 @@ void usage() {
            "[--guest-budget <instructions>] [--show-frame|--capture-frame] "
            "[--run] [--input-config <path>] [--input-trace] [--frame-trace] "
            "[--memory-card <path-to-mcr>] "
+           "[--data-root <dir>] "
            "[--load-quick-save <path-to-stsm>] "
            "[--frame-capture-trace] [--timing-trace] [--motion-trace] "
            "[--debug-overlay] "
@@ -123,34 +125,11 @@ void usage() {
 
 namespace {
 
-std::filesystem::path runningExecutablePath(const char* argument_zero) {
-#ifdef _WIN32
-    std::vector<wchar_t> buffer(512U);
-    for (;;) {
-        const auto length = GetModuleFileNameW(
-            nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-        if (length == 0U) {
-            break;
-        }
-        if (length + 1U < buffer.size()) {
-            return std::filesystem::path{
-                std::wstring_view{buffer.data(), length}};
-        }
-        buffer.resize(buffer.size() * 2U);
-    }
-#endif
-    return std::filesystem::path{argument_zero};
-}
-
 std::optional<Options> parseOptionsImpl(
     int argc,
     char** argv,
     const std::optional<std::filesystem::path>& launcher_settings_path) {
     Options result;
-    if (launcher_settings_path) {
-        result.launcher_settings_path = *launcher_settings_path;
-        result.have_launcher_settings_path = true;
-    }
     bool have_game = false;
     bool have_explicit_mode = false;
     bool command_line_window_size = false;
@@ -167,6 +146,10 @@ std::optional<Options> parseOptionsImpl(
         if (argument == "--game" && index + 1 < argc && !have_game) {
             result.game = std::filesystem::path{argv[++index]};
             have_game = true;
+        } else if (argument == "--data-root" && index + 1 < argc &&
+                   !result.have_data_root) {
+            result.data_root = std::filesystem::path{argv[++index]};
+            result.have_data_root = true;
         } else if (argument == "--probe-guest" && !result.probe_guest) {
             result.probe_guest = true;
             have_explicit_mode = true;
@@ -439,8 +422,26 @@ std::optional<Options> parseOptionsImpl(
         }
     }
 
-    const auto launcher_settings = launcher_settings_path
-        ? loadLauncherSettings(*launcher_settings_path)
+    // Resolve the per-user data root and its configuration file. --data-root
+    // wins; otherwise the caller supplies the path (the running game passes
+    // <Documents>\Stuntmaster\stuntmaster.ini via the two-argument overload). A
+    // std::nullopt path with no --data-root leaves data_root empty and keeps
+    // outputs relative to the working directory -- used by unit tests.
+    std::optional<std::filesystem::path> effective_config;
+    if (result.have_data_root) {
+        effective_config = userPathsForRoot(result.data_root).config;
+    } else if (launcher_settings_path) {
+        effective_config = *launcher_settings_path;
+    }
+    if (effective_config) {
+        result.launcher_settings_path = *effective_config;
+        result.have_launcher_settings_path = true;
+        result.data_root = effective_config->parent_path();
+        result.have_data_root = true;
+    }
+
+    const auto launcher_settings = effective_config
+        ? loadLauncherSettings(*effective_config)
         : std::optional<LauncherSettings>{};
     if (launcher_settings) {
         if (!have_game) {
@@ -462,17 +463,34 @@ std::optional<Options> parseOptionsImpl(
             if (!command_line_widescreen) {
                 result.widescreen_cull = launcher_settings->widescreen;
             }
-            const auto width = renderWidthFor(
-                launcher_settings->resolution_height,
-                result.widescreen_cull);
+            result.fullscreen = launcher_settings->fullscreen;
+            // Render target: the explicit stored value, or the native desktop
+            // resolution when the config requests native (0/0).
+            const auto native = primaryDisplaySize();
+            const auto render_width = launcher_settings->render_width != 0U
+                ? launcher_settings->render_width
+                : native.width;
+            const auto render_height = launcher_settings->render_height != 0U
+                ? launcher_settings->render_height
+                : native.height;
+            // Windowed size is tracked separately from the render target: the
+            // explicit stored size, or two-thirds of the display by default so
+            // the native-resolution render is supersampled into a comfortable
+            // window rather than covering the whole screen.
+            const auto window = launcher_settings->window_width != 0U &&
+                    launcher_settings->window_height != 0U
+                ? DisplaySize{
+                      launcher_settings->window_width,
+                      launcher_settings->window_height}
+                : defaultWindowedSize();
             if (!command_line_window_size) {
-                result.window_width = width;
-                result.window_height = launcher_settings->resolution_height;
+                result.window_width = window.width;
+                result.window_height = window.height;
                 result.have_window_size = true;
             }
             if (!command_line_render_size) {
-                result.render_width = width;
-                result.render_height = launcher_settings->resolution_height;
+                result.render_width = render_width;
+                result.render_height = render_height;
                 result.have_render_size = true;
             }
             // Persisted 30 Hz is an initial selection, not a request to
@@ -497,9 +515,9 @@ std::optional<Options> parseOptionsImpl(
         }
     }
     if (result.run_live && !result.have_input_config &&
-        launcher_settings_path) {
+        !result.data_root.empty()) {
         result.input_config =
-            launcher_settings_path->parent_path() / "input.ini";
+            userPathsForRoot(result.data_root).input_config;
         result.have_input_config = true;
     }
     if (!result.have_render_size && result.widescreen_cull) {
@@ -519,6 +537,15 @@ std::optional<Options> parseOptionsImpl(
         if (conflicts) {
             return std::nullopt;
         }
+        return result;
+    }
+    // First-launch interactive setup: the real executable was started with a
+    // per-user data root but no game and no headless/diagnostic mode. Defer
+    // disc selection to the interactive picker (game_setup / main) instead of
+    // failing validation for a missing --game. Keep this in sync with
+    // needsInteractiveGameSetup(); the replay-capture mode already returned.
+    if (!have_game && !result.data_root.empty() && !result.probe_guest &&
+        !result.show_frame && !result.capture_frame) {
         return result;
     }
     if (!have_game ||
@@ -574,30 +601,57 @@ std::optional<Options> parseOptionsImpl(
 
 } // namespace
 
+void applyLiveDisplaySettings(
+    Options& options, const LauncherSettings& settings) {
+    options.run_live = true;
+    options.widescreen_cull = settings.widescreen;
+    options.fullscreen = settings.fullscreen;
+    const auto native = primaryDisplaySize();
+    const auto render_width = settings.render_width != 0U
+        ? settings.render_width
+        : native.width;
+    const auto render_height = settings.render_height != 0U
+        ? settings.render_height
+        : native.height;
+    const auto window = settings.window_width != 0U &&
+            settings.window_height != 0U
+        ? DisplaySize{settings.window_width, settings.window_height}
+        : defaultWindowedSize();
+    options.window_width = window.width;
+    options.window_height = window.height;
+    options.have_window_size = true;
+    options.render_width = render_width;
+    options.render_height = render_height;
+    options.have_render_size = true;
+    options.retime_motion = true;
+    options.retime_clock = true;
+    if (settings.sixty_hz) {
+        options.presentation_rate = 60U;
+        options.have_presentation_rate = true;
+        options.guest_update_rate = 60U;
+        options.have_guest_update_rate = true;
+    }
+}
+
 std::optional<Options> parseOptions(int argc, char** argv) {
     if (argc <= 0 || argv == nullptr || argv[0] == nullptr) {
         return std::nullopt;
     }
-    const auto executable = runningExecutablePath(argv[0]);
-    auto executable_stem = executable.stem().wstring();
-    std::transform(
-        executable_stem.begin(), executable_stem.end(),
-        executable_stem.begin(),
-        [](wchar_t character) {
-            return static_cast<wchar_t>(std::towlower(character));
-        });
-    // Unit-test and helper binaries share the build directory with the game.
-    // Only the actual game executable should silently consume live defaults.
-    const auto settings_path = executable_stem == L"stuntmaster"
-        ? std::optional{launcherSettingsPath(executable)}
-        : std::optional<std::filesystem::path>{};
-    return parseOptionsImpl(argc, argv, settings_path);
+    // The shipped game always resolves its per-user data root under
+    // <Documents>\Stuntmaster, independent of the executable's filename or the
+    // directory it is launched from -- the release artifact is renamed
+    // stuntmaster-pc-<version>-windows-x64.exe, and users rename it further. An
+    // explicit --data-root overrides it (handled in the impl); unit tests use
+    // the three-argument overload to inject a specific root, or std::nullopt for
+    // none.
+    return parseOptionsImpl(
+        argc, argv, userPathsForRoot(defaultUserDataRoot()).config);
 }
 
 std::optional<Options> parseOptions(
     int argc,
     char** argv,
-    const std::filesystem::path& launcher_settings_path) {
+    const std::optional<std::filesystem::path>& launcher_settings_path) {
     return parseOptionsImpl(argc, argv, launcher_settings_path);
 }
 

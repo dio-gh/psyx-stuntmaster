@@ -6,6 +6,23 @@ on:
       - '**'
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version label to bake into the artifacts (defaults to the project version).'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      release_version:
+        description: 'Release version label to bake into the artifacts (defaults to the project version).'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      artifact_name:
+        description: 'Name of the uploaded release artifact bundle.'
+        value: ${{ jobs.build.outputs.artifact_name }}
 
 permissions:
   contents: read
@@ -23,6 +40,9 @@ jobs:
       artifact_name: ${{ steps.release_metadata.outputs.artifact_name }}
     env:
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\build\vcpkg-binary-cache,readwrite
+      # Empty on push/PR -> tools resolve "<branch>-<shorthash>"; a tag caller
+      # (or workflow_dispatch input) passes the release label to bake in.
+      STUNTMASTER_RELEASE_VERSION: ${{ inputs.release_version || '' }}
 
     steps:
       - name: Check out source and pinned submodules
@@ -362,7 +382,6 @@ jobs:
             Get-ToolEvidence 'Windows manifest tool' (Join-Path $sdkBin 'mt.exe') -RequireMicrosoftSignature
             Get-ToolEvidence 'CMake' $cmakeCommand
             Get-ToolEvidence 'CTest' (Join-Path $cmakeBin 'ctest.exe')
-            Get-ToolEvidence 'CPack' (Join-Path $cmakeBin 'cpack.exe')
             Get-ToolEvidence 'vcpkg' $vcpkg
             Get-ToolEvidence 'Git' $git
             Get-ToolEvidence 'PowerShell' $pwsh
@@ -431,81 +450,30 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archives = @(Get-ChildItem -LiteralPath dist -Filter 'stuntmaster-pc-*-windows-x64.zip' -File)
-          if ($archives.Count -ne 1) {
-            throw "Expected exactly one release archive, found $($archives.Count)."
+          $artifacts = @(Get-ChildItem -LiteralPath dist -Filter 'stuntmaster-pc-*-windows-x64.exe' -File)
+          if ($artifacts.Count -ne 1) {
+            throw "Expected exactly one release executable, found $($artifacts.Count)."
           }
-          $archive = $archives[0]
+          $artifact = $artifacts[0]
           $sourceBundles = @(Get-ChildItem -LiteralPath dist `
             -Filter 'stuntmaster-pc-*-corresponding-source.zip' -File)
           if ($sourceBundles.Count -ne 1) {
             throw "Expected exactly one corresponding-source archive, found $($sourceBundles.Count)."
           }
           $sourceBundle = $sourceBundles[0]
-          $match = [regex]::Match($archive.Name, '^stuntmaster-pc-(?<version>.+)-windows-x64\.zip$')
+          $match = [regex]::Match($artifact.Name, '^stuntmaster-pc-(?<version>.+)-windows-x64\.exe$')
           if (-not $match.Success) {
-            throw "Could not extract the project version from $($archive.Name)."
+            throw "Could not extract the project version from $($artifact.Name)."
           }
-          $contentsPath = "$($archive.FullName).contents.txt"
-          $checksumPath = "$($archive.FullName).sha256"
-          $sbomPath = "$($archive.FullName).spdx.json"
-          $sbomSummaryPath = "$($archive.FullName).sbom.md"
-          $sbomChecksumPath = "$($archive.FullName).sbom.sha256"
+          # The release artifact is the single self-configuring executable: it
+          # has no archive contents to enumerate, so there is no contents.txt.
+          $checksumPath = "$($artifact.FullName).sha256"
+          $sbomPath = "$($artifact.FullName).spdx.json"
+          $sbomSummaryPath = "$($artifact.FullName).sbom.md"
+          $sbomChecksumPath = "$($artifact.FullName).sbom.sha256"
           $sourceContentsPath = "$($sourceBundle.FullName).contents.txt"
           $sourceChecksumPath = "$($sourceBundle.FullName).sha256"
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
-          try {
-            $entries = @($zip.Entries | Sort-Object FullName)
-            $entries | ForEach-Object {
-              '{0,12}  {1}' -f $_.Length, $_.FullName
-            } | Tee-Object -FilePath $contentsPath
-            $archiveRoot = "$($archive.BaseName)/"
-            $allowedRootFiles = @(
-              'stuntmaster.exe',
-              'stuntmaster-launcher.exe',
-              'input.ini',
-              'README-FIRST.txt',
-              'README.md',
-              'LICENSE',
-              'THIRD_PARTY.md'
-            )
-            $allowedLicenses = @(
-              'licenses/FFmpeg-LGPL-2.1-or-later.txt',
-              'licenses/FFmpeg-LGPL-3.0.txt',
-              'licenses/FFmpeg-LICENSE.md',
-              'licenses/fmt.txt',
-              'licenses/OpenAL-Soft.txt',
-              'licenses/SDL2.txt'
-            )
-            $unexpected = @($entries | Where-Object {
-              $name = $_.FullName
-              if ($name.Contains('\') -or
-                  -not $name.StartsWith($archiveRoot, [StringComparison]::Ordinal)) {
-                return $true
-              }
-              $relative = $name.Substring($archiveRoot.Length)
-              if ($relative -match '(^|/)\.{1,2}(/|$)') {
-                return $true
-              }
-              if (-not $_.Name) {
-                return -not ($relative -eq '' -or
-                  $relative -eq 'licenses/' -or
-                  $relative -match '^docs/(?:[^/]+/)*$')
-              }
-              return -not (
-                $relative -in $allowedRootFiles -or
-                $relative -in $allowedLicenses -or
-                $relative -match '^docs/(?:[^/]+/)*[^/]+\.md$'
-              )
-            })
-            if ($unexpected.Count -ne 0) {
-              $names = $unexpected.FullName -join ', '
-              throw "Release archive contains unexpected paths: $names"
-            }
-          } finally {
-            $zip.Dispose()
-          }
           $sourceZip = [System.IO.Compression.ZipFile]::OpenRead($sourceBundle.FullName)
           try {
             $sourceEntries = @($sourceZip.Entries | Where-Object { $_.Name } |
@@ -544,13 +512,12 @@ jobs:
           } finally {
             $sourceZip.Dispose()
           }
-          $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($archive.Name)" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+          $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($artifact.Name)" | Set-Content -LiteralPath $checksumPath -Encoding ascii
           $sourceHash = (Get-FileHash -LiteralPath $sourceBundle.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           "$sourceHash  $($sourceBundle.Name)" | Set-Content `
             -LiteralPath $sourceChecksumPath -Encoding ascii
-          "RELEASE_ARCHIVE=$($archive.FullName)" >> $env:GITHUB_ENV
-          "RELEASE_CONTENTS=$contentsPath" >> $env:GITHUB_ENV
+          "RELEASE_ARCHIVE=$($artifact.FullName)" >> $env:GITHUB_ENV
           "RELEASE_CHECKSUM=$checksumPath" >> $env:GITHUB_ENV
           "RELEASE_SBOM=$sbomPath" >> $env:GITHUB_ENV
           "RELEASE_SBOM_SUMMARY=$sbomSummaryPath" >> $env:GITHUB_ENV
@@ -590,7 +557,6 @@ jobs:
           path: |
             ${{ env.RELEASE_ARCHIVE }}
             ${{ env.RELEASE_CHECKSUM }}
-            ${{ env.RELEASE_CONTENTS }}
             ${{ env.RELEASE_SBOM }}
             ${{ env.RELEASE_SBOM_SUMMARY }}
             ${{ env.RELEASE_SBOM_CHECKSUM }}
@@ -602,7 +568,7 @@ jobs:
           retention-days: 30
 
   attest:
-    name: Attest release ZIP and SBOM
+    name: Attest release executable and SBOM
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-24.04
@@ -633,23 +599,22 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          archives=(attestation-input/stuntmaster-pc-*-windows-x64.zip)
+          artifacts=(attestation-input/stuntmaster-pc-*-windows-x64.exe)
           files=(attestation-input/*)
-          if (( ${#archives[@]} != 1 )); then
-            echo "Expected exactly one release ZIP, found ${#archives[@]}." >&2
+          if (( ${#artifacts[@]} != 1 )); then
+            echo "Expected exactly one release executable, found ${#artifacts[@]}." >&2
             exit 1
           fi
-          archive="${archives[0]}"
+          artifact="${artifacts[0]}"
           expected=(
-            "$archive"
-            "$archive.sha256"
-            "$archive.contents.txt"
-            "$archive.spdx.json"
-            "$archive.sbom.md"
-            "$archive.sbom.sha256"
-            "${archive%-windows-x64.zip}-corresponding-source.zip"
-            "${archive%-windows-x64.zip}-corresponding-source.zip.contents.txt"
-            "${archive%-windows-x64.zip}-corresponding-source.zip.sha256"
+            "$artifact"
+            "$artifact.sha256"
+            "$artifact.spdx.json"
+            "$artifact.sbom.md"
+            "$artifact.sbom.sha256"
+            "${artifact%-windows-x64.exe}-corresponding-source.zip"
+            "${artifact%-windows-x64.exe}-corresponding-source.zip.contents.txt"
+            "${artifact%-windows-x64.exe}-corresponding-source.zip.sha256"
           )
           if (( ${#files[@]} != ${#expected[@]} )); then
             echo "Expected exactly ${#expected[@]} attestation inputs, found ${#files[@]}." >&2
@@ -664,16 +629,15 @@ jobs:
           done
           (
             cd attestation-input
-            sha256sum --check ./*.zip.sha256
-            sha256sum --check ./*.sbom.sha256
+            sha256sum --check ./*.sha256
           )
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "sbom=$archive.spdx.json" >> "$GITHUB_OUTPUT"
+          echo "subject=$artifact" >> "$GITHUB_OUTPUT"
+          echo "sbom=$artifact.spdx.json" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub SBOM attestation
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
-          subject-path: ${{ steps.inputs.outputs.archive }}
+          subject-path: ${{ steps.inputs.outputs.subject }}
           sbom-path: ${{ steps.inputs.outputs.sbom }}
 
       - name: Create GitHub provenance attestation for every published file

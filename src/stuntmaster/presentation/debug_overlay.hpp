@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -79,5 +80,14 @@ private:
 [[nodiscard]] DebugOverlayBitmap rasterizeNotificationOverlay(
     std::string_view message,
     std::uint32_t scale);
+
+// Rasterize arbitrary text rows through the shared 5x7 overlay font, with
+// explicit background and foreground colours. Unknown characters render as a
+// blank glyph. Used by the debug/notification overlays and the license viewer.
+[[nodiscard]] DebugOverlayBitmap rasterizeTextRows(
+    const std::vector<std::string>& rows,
+    std::uint32_t scale,
+    std::array<std::uint8_t, 3U> background,
+    std::array<std::uint8_t, 3U> foreground);
 
 } // namespace stuntmaster::presentation

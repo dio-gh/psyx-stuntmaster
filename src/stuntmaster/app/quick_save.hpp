@@ -49,8 +49,10 @@ struct QuickSaveFile {
     std::vector<std::byte> payload;
 };
 
-[[nodiscard]] std::filesystem::path defaultQuickSavePath();
+[[nodiscard]] std::filesystem::path defaultQuickSavePath(
+    const std::filesystem::path& saves_dir);
 [[nodiscard]] std::filesystem::path timestampedQuickSavePath(
+    const std::filesystem::path& saves_dir,
     std::chrono::system_clock::time_point now =
         std::chrono::system_clock::now());
 

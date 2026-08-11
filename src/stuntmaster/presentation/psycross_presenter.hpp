@@ -1,12 +1,14 @@
 #pragma once
 
 #include "stuntmaster/presentation/debug_overlay.hpp"
+#include "stuntmaster/presentation/license_overlay.hpp"
 
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <string>
 #include <utility>
@@ -37,7 +39,11 @@ public:
         // Create the window hidden so the live present path can be driven and
         // read back headlessly (Stage 0 of the presentation redesign). The GL
         // context and every offscreen framebuffer are still created.
-        bool hidden_window = false);
+        bool hidden_window = false,
+        // Start in SDL borderless-desktop fullscreen (SDL_WINDOW_FULLSCREEN_-
+        // DESKTOP). Alt+Enter still toggles it at runtime (handled inside
+        // PsyCross); the current state is readable via isFullscreen().
+        bool fullscreen = false);
     ~PsyCrossPresenter();
 
     PsyCrossPresenter(const PsyCrossPresenter&) = delete;
@@ -72,7 +78,40 @@ public:
     [[nodiscard]] std::uint32_t displayRefreshRate() const noexcept {
         return display_refresh_rate_;
     }
+    // Whether the window is currently in SDL borderless-desktop fullscreen,
+    // read from the live SDL window flags. The user can toggle this at runtime
+    // with Alt+Enter (handled inside PsyCross), so the application polls this to
+    // persist the choice.
+    [[nodiscard]] bool isFullscreen() const noexcept;
+    // Invoked on the polling thread the instant the window's fullscreen state
+    // changes -- including a toggle made during an FMV, which pollPadOneButtons
+    // still drives. The application uses this to persist the choice immediately,
+    // because a window close hard-exits (PsyCross calls exit(0) from its event
+    // pump) and never returns to the main loop's persistence pass.
+    void setFullscreenChangedCallback(std::function<void(bool)> callback) {
+        fullscreen_changed_callback_ = std::move(callback);
+    }
+    // The current windowed client size in pixels. While borderless fullscreen
+    // is active this reports the last size the window had before going
+    // fullscreen, so the application persists the windowed size the user chose
+    // rather than the monitor-filling fullscreen extent.
+    [[nodiscard]] std::uint32_t windowedWidth() const noexcept {
+        return last_windowed_width_;
+    }
+    [[nodiscard]] std::uint32_t windowedHeight() const noexcept {
+        return last_windowed_height_;
+    }
     void showNotification(std::string message);
+
+    // Host license viewer (hybrid P5(B)): a pageable/scrollable overlay drawn on
+    // top of the frame. Documents are supplied once; the viewer is opened by the
+    // in-game menu trigger (or the host 'L' key) and navigated with the pad/arrows.
+    void setLicenseDocuments(std::vector<LicenseDocument> documents);
+    void openLicenseViewer();
+    void closeLicenseViewer() noexcept;
+    [[nodiscard]] bool isLicenseViewerActive() const noexcept {
+        return license_viewer_active_;
+    }
     // Recreate PsyCross's internal target on the next present while retaining
     // the independently resizable SDL window and input/audio ownership.
     void setRenderSize(std::uint32_t width, std::uint32_t height);
@@ -189,6 +228,10 @@ private:
     void finishWindowPresentation();
     void drawDebugOverlay();
     void drawNotificationOverlay();
+    void drawLicenseOverlay();
+    // Consume pad + keyboard navigation while the license viewer is open. The
+    // pad word is active-low (a cleared bit means pressed).
+    void updateLicenseViewerInput(std::uint16_t pad_buttons);
 
     bool has_scanout_{};
     std::uint32_t scanout_width_{};
@@ -199,6 +242,25 @@ private:
     unsigned int debug_overlay_framebuffer_{};
     unsigned int notification_overlay_texture_{};
     unsigned int notification_overlay_framebuffer_{};
+    unsigned int license_overlay_texture_{};
+    unsigned int license_overlay_framebuffer_{};
+    LicenseOverlay license_overlay_;
+    bool license_viewer_active_{};
+    int license_toggle_key_{};
+    bool license_toggle_key_down_{};
+    // Key/button edge latches for the license viewer's discrete actions (page,
+    // document change, close); continuous scroll needs no latch.
+    bool license_page_up_down_{};
+    bool license_page_down_down_{};
+    bool license_prev_doc_down_{};
+    bool license_next_doc_down_{};
+    bool license_close_down_{};
+    // Scroll auto-repeat: a fresh press moves one notch immediately; holding
+    // repeats on a wall-clock schedule so the speed is independent of how often
+    // input is polled (which varies between gameplay and FMV playback). -1 up,
+    // +1 down, 0 released.
+    int license_scroll_direction_{};
+    std::chrono::steady_clock::time_point license_scroll_next_repeat_{};
     DebugOverlayState debug_overlay_{};
     DebugOverlayVisibilityToggle debug_overlay_toggle_{};
     bool debug_overlay_visible_{};
@@ -228,6 +290,20 @@ private:
     std::uint16_t previous_trace_buttons_{0xFFFFU};
     std::uint32_t capture_trace_event_{};
     std::deque<DiagnosticFrame> diagnostic_frames_;
+    // The last client size the window had while not in borderless fullscreen.
+    // Updated every input poll so a runtime resize is captured, and left frozen
+    // while fullscreen so it keeps reporting the user's chosen windowed size.
+    std::uint32_t last_windowed_width_{};
+    std::uint32_t last_windowed_height_{};
+    // The live (on-screen) presenter drives its window swaps at vsync so the
+    // borderless-desktop scanout is tear-free. False for the headless capture
+    // path, which must present uncapped. See finishWindowPresentation().
+    bool vsync_wanted_{};
+    // Last-seen fullscreen state, so pollPadOneButtons fires the change callback
+    // exactly once per edge.
+    bool last_fullscreen_state_{};
+    // Fired on every fullscreen-state edge so the app can persist immediately.
+    std::function<void(bool)> fullscreen_changed_callback_{};
     std::array<unsigned char, 34> pad_one_{};
     std::array<unsigned char, 34> pad_two_{};
     SDL_GameController* rumble_controller_{};

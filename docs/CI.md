@@ -36,13 +36,13 @@ application and PsyCross sources, authentic signed FFmpeg source inputs, and
 relinking instructions.
 
 After a successful branch-push or manual build, a separate Linux job downloads
-that completed artifact, rechecks the exact nine-file allowlist and all checksum
+that completed artifact, rechecks the exact eight-file allowlist and all checksum
 manifests, and asks GitHub's Sigstore-backed attestation service to create two
-signed statements. The first binds the release ZIP digest to the SPDX document.
-The second records all nine published files as subjects of a SLSA provenance
-attestation, so the human-readable report, checksums, and inventory are covered
-as well as the ZIP and canonical SBOM. The attestation job does not check out or
-execute repository source. Its OIDC and attestation-write permissions are
+signed statements. The first binds the release executable digest to the SPDX
+document. The second records all eight published files as subjects of a SLSA
+provenance attestation, so the human-readable report, checksums, and
+corresponding-source bundle are covered as well as the executable and canonical
+SBOM. The attestation job does not check out or execute repository source. Its OIDC and attestation-write permissions are
 isolated from the Windows compiler job.
 
 Pull-request builds deliberately skip attestation. In particular, code from an
@@ -53,8 +53,8 @@ repository to make a signed claim about its output.
 compile the project again. Instead, it finds an unexpired successful Windows
 build artifact from a non-pull-request run whose recorded source commit is
 exactly the tagged commit, downloads it, verifies its file set and checksums,
-requires the ZIP's verified signed SPDX predicate to equal the published JSON
-sidecar, and verifies every file's SLSA provenance attestation before creating
+requires the executable's verified signed SPDX predicate to equal the published
+JSON sidecar, and verifies every file's SLSA provenance attestation before creating
 a draft GitHub Release for the existing tag.
 Verification pins the expected repository, signer workflow, source commit,
 predicate type, and GitHub-hosted runner. If a matching build is still running,
@@ -75,12 +75,12 @@ it; the build job and all non-tag runs retain `contents: read`. The job refuses
 to invent a missing tag, replace an existing release, overwrite assets, or
 publish a draft automatically.
 
-Consumers can verify a downloaded release archive and recover the signed SPDX
+Consumers can verify a downloaded release executable and recover the signed SPDX
 predicate with GitHub CLI:
 
 ```console
 TAG_COMMIT_SHA=replace-with-full-tag-commit-sha
-gh attestation verify stuntmaster-pc-0.0.1-windows-x64.zip \
+gh attestation verify stuntmaster-pc-0.0.1-windows-x64.exe \
   --repo neonoxd/psyx-stuntmaster \
   --signer-workflow github.com/neonoxd/psyx-stuntmaster/.github/workflows/windows-build.yml \
   --signer-digest "$TAG_COMMIT_SHA" \
@@ -100,11 +100,11 @@ are not release approval.
 
 ## Versioning
 
-The CMake `project(... VERSION ...)` value is the release-package version and
-drives CPack's archive name. `vcpkg.json` mirrors that version because vcpkg
-requires its own manifest version. CI rejects a mismatch between the two.
+The CMake `project(... VERSION ...)` value is the release version and names the
+published executable. `vcpkg.json` mirrors that version because vcpkg requires
+its own manifest version. CI rejects a mismatch between the two.
 
-The workflow discovers the generated archive and extracts its version instead
+The workflow discovers the generated executable and extracts its version instead
 of hardcoding `0.0.1`. A normal version bump therefore changes the CMake
 project version and the matching `version-string` in `vcpkg.json`; workflow
 paths do not need editing.
@@ -152,12 +152,14 @@ reusable cache after dependencies or the triplet change.
 ## Reproducibility
 
 Release compilation uses MSVC's `/Brepro` option to remove compiler and linker
-timestamps, including PsyCross's legacy `__DATE__` and `__TIME__` banner. The
-build derives `SOURCE_DATE_EPOCH` from the checked-out commit, which gives CPack
-stable ZIP entry timestamps. The SBOM likewise uses the source commit time and
-a namespace derived from the source commit and archive digest. For the same
-source, dependency set, and toolchain, independent clean runs are therefore
-expected to produce the same release ZIP and SBOM SHA-256 values.
+timestamps, including PsyCross's legacy `__DATE__` and `__TIME__` banner, which
+is what makes the single executable itself reproducible. The build derives
+`SOURCE_DATE_EPOCH` from the checked-out commit, which gives the
+corresponding-source ZIP stable entry timestamps. The SBOM likewise uses the
+source commit time and a namespace derived from the source commit and executable
+digest. For the same source, dependency set, and toolchain, independent clean
+runs are therefore expected to produce the same release executable and SBOM
+SHA-256 values.
 
 FFmpeg C objects additionally use `/O2 /Brepro /MT /GL`, while NASM supplies
 its optimized x86 objects. The final application link already has CMake
@@ -179,26 +181,24 @@ workflows.
 
 ## SBOM scope
 
-The authoritative SPDX 2.3 JSON SBOM describes the packaged Windows
-distribution. It includes
-every file in the release ZIP with SHA-1 and SHA-256, the exact source and
-PsyCross commits, the authentic FFmpeg 8.1.2 source archive and checksum, and
-every package recorded in the build's vcpkg status database. Static
-dependencies are represented as package relationships; shipped FFmpeg license
-files are associated with the FFmpeg package. The analyzed `stuntmaster-pc`
-distribution contains every shipped file. Files copied from an unanalyzed
-dependency package use SPDX `GENERATED_FROM` relationships, which preserves
-their component provenance without claiming that every file in the complete
-upstream package was analyzed.
+The authoritative SPDX 2.3 JSON SBOM describes the single published Windows
+executable. It includes that executable with SHA-1 and SHA-256, the exact source
+and PsyCross commits, the authentic FFmpeg 8.1.2 source archive and checksum, and
+every package recorded in the build's vcpkg status database. Static dependencies
+-- PsyCross, FFmpeg, and the vcpkg runtime components whose license texts are now
+embedded in the executable -- are represented as package relationships
+(`DEPENDS_ON`) rather than as separate shipped files. The analyzed
+`stuntmaster-pc` package is the executable itself, which it `CONTAINS` as its one
+analyzed file.
 
 The build also derives a deterministic Markdown companion from the same SBOM
 model. It presents release provenance, packages, roles, declared and concluded
-licenses, and every shipped file's SHA-256 in tables intended for people.
+licenses, and the executable's SHA-256 in tables intended for people.
 Markdown is not an SPDX serialization, so the report labels the `.spdx.json`
 file as authoritative.
-Both files are published beside the release ZIP, not embedded within it: this
-avoids self-referential archive hashing and keeps the SBOM available before a
-consumer downloads or runs the package. The files are also retained together in
+Both files are published beside the release executable, not embedded within it:
+this avoids self-referential hashing and keeps the SBOM available before a
+consumer downloads or runs the executable. The files are also retained together in
 the Actions artifact for non-release builds.
 
 The Windows job captures stable build-environment facts after configuration:
@@ -208,7 +208,7 @@ Git version, Release configuration, vcpkg triplet and baseline,
 `SOURCE_DATE_EPOCH`, FFmpeg source/signature/key/configuration identity, NASM
 version, linkage mode, and the active reproducibility options. It also records the
 exact SHA-256 and Authenticode result for the MSVC compiler, linker, librarian,
-MSBuild, Windows resource and manifest tools, CMake, CTest, CPack, vcpkg, Git,
+MSBuild, Windows resource and manifest tools, CMake, CTest, vcpkg, Git,
 PowerShell, MSYS2 Bash, GNU Make, NASM, GnuPG/GPGV, curl, tar, and xz. The
 Microsoft build and SDK tools must have a valid Microsoft
 publisher signature. Any invalid signature fails the build; tools that are

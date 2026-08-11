@@ -9,9 +9,20 @@ namespace stuntmaster::app {
 
 struct LauncherSettings {
     std::filesystem::path game_directory;
-    std::uint32_t resolution_height{720U};
-    bool sixty_hz{};
-    bool widescreen{};
+    // Out-of-the-box defaults for a self-contained executable: 60 fps retiming,
+    // widescreen, and fullscreen are all on. Resolution defaults to the native
+    // desktop, represented here by 0/0 and resolved at startup.
+    bool sixty_hz{true};
+    bool widescreen{true};
+    bool fullscreen{true};
+    std::uint32_t render_width{};
+    std::uint32_t render_height{};
+    // The windowed client size, tracked independently of the render target so a
+    // native-resolution render can present into a smaller window. 0/0 means the
+    // default (two-thirds of the primary display); a runtime window resize
+    // stores the chosen size here so it is restored on the next launch.
+    std::uint32_t window_width{};
+    std::uint32_t window_height{};
 };
 
 [[nodiscard]] std::filesystem::path launcherSettingsPath(
@@ -26,14 +37,18 @@ struct LauncherSettings {
     std::string& error);
 
 // Persists an accepted live setting change while retaining the configured
-// game folder. Unsupported custom render heights leave the saved resolution
-// tier unchanged instead of making the launcher file unreadable.
+// game folder. The render resolution is stored explicitly (0/0 = native) and
+// the windowed size independently (0/0 = the two-thirds-of-display default).
 [[nodiscard]] bool saveRuntimeLauncherSettings(
     const std::filesystem::path& path,
     const std::filesystem::path& fallback_game_directory,
-    std::uint32_t resolution_height,
+    std::uint32_t render_width,
+    std::uint32_t render_height,
+    std::uint32_t window_width,
+    std::uint32_t window_height,
     bool sixty_hz,
     bool widescreen,
+    bool fullscreen,
     std::string& error);
 
 [[nodiscard]] std::optional<std::filesystem::path> findGameCue(

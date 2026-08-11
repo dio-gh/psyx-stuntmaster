@@ -71,11 +71,13 @@ bool quickSaveSettingsCompatible(
     return true;
 }
 
-std::filesystem::path defaultQuickSavePath() {
-    return std::filesystem::path{"saves"} / "quick-save.stsm";
+std::filesystem::path defaultQuickSavePath(
+    const std::filesystem::path& saves_dir) {
+    return saves_dir / "quick-save.stsm";
 }
 
 std::filesystem::path timestampedQuickSavePath(
+    const std::filesystem::path& saves_dir,
     std::chrono::system_clock::time_point now) {
     const auto milliseconds = std::chrono::duration_cast<
         std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
@@ -90,7 +92,7 @@ std::filesystem::path timestampedQuickSavePath(
     name << "quick-save-" << std::put_time(&local, "%Y%m%d-%H%M%S-")
          << std::setfill('0') << std::setw(3) << milliseconds.count()
          << ".stsm";
-    return std::filesystem::path{"saves"} / name.str();
+    return saves_dir / name.str();
 }
 
 void writeQuickSaveFile(

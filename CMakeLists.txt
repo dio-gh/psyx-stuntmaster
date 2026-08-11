@@ -37,6 +37,7 @@ add_library(stuntmaster_core
     src/stuntmaster/game/supported_game.cpp
     src/stuntmaster/platform/executable_memory.cpp
     src/stuntmaster/presentation/debug_overlay.cpp
+    src/stuntmaster/presentation/license_overlay.cpp
     src/stuntmaster/presentation/widescreen_overlay.cpp
     src/stuntmaster/psx/bios_hle.cpp
     src/stuntmaster/psx/executable.cpp
@@ -67,11 +68,28 @@ add_executable(stuntmaster
     src/stuntmaster/app/main.cpp
     src/stuntmaster/app/diagnostics.cpp
     src/stuntmaster/app/frame_io.cpp
+    src/stuntmaster/app/game_setup.cpp
     src/stuntmaster/app/launcher_settings.cpp
+    src/stuntmaster/app/licenses.cpp
+    src/stuntmaster/app/logging.cpp
     src/stuntmaster/app/options.cpp
     src/stuntmaster/app/quick_save.cpp
+    src/stuntmaster/app/user_paths.cpp
 )
 target_link_libraries(stuntmaster PRIVATE stuntmaster_core)
+if(WIN32)
+    # SHGetKnownFolderPath (shell32) + CoTaskMemFree (ole32) resolve the
+    # per-user <Documents>\Stuntmaster data directory without touching the
+    # registry.
+    target_link_libraries(stuntmaster PRIVATE shell32 ole32)
+    # Ship as a GUI-subsystem app so a double-click shows no console window,
+    # but keep the standard int main(int, char**): /ENTRY:mainCRTStartup uses it
+    # under /SUBSYSTEM:WINDOWS, and a redirected stdout (probes/CI) still flows.
+    set_target_properties(stuntmaster PROPERTIES WIN32_EXECUTABLE ON)
+    if(MSVC)
+        target_link_options(stuntmaster PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+endif()
 target_compile_features(stuntmaster PRIVATE cxx_std_20)
 set_target_properties(stuntmaster PROPERTIES
     FOLDER "Applications"
@@ -87,34 +105,15 @@ add_custom_command(TARGET stuntmaster POST_BUILD
 )
 
 if(WIN32)
+    # The game window icon/version resource. The standalone launcher was retired
+    # in favour of the executable's own first-launch flow (see docs/dev).
     enable_language(RC)
     target_sources(stuntmaster PRIVATE res/stuntmaster.rc)
     target_include_directories(stuntmaster PRIVATE
         $<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/res>)
-
-    add_executable(stuntmaster_launcher WIN32
-        src/stuntmaster/launcher/main.cpp
-        src/stuntmaster/app/launcher_settings.cpp
-        res/stuntmaster.rc
-    )
-    target_include_directories(stuntmaster_launcher PRIVATE
-        src/stuntmaster/app
-        $<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/res>)
-    target_compile_features(stuntmaster_launcher PRIVATE cxx_std_20)
-    target_link_libraries(stuntmaster_launcher PRIVATE shell32 ole32)
-    if(MSVC)
-        target_compile_options(
-            stuntmaster_launcher PRIVATE /W4 /permissive- /EHsc)
-        set_property(TARGET stuntmaster_launcher PROPERTY
-            MSVC_RUNTIME_LIBRARY
-            "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_target_properties(stuntmaster_launcher PROPERTIES
-        OUTPUT_NAME "stuntmaster-launcher"
-        FOLDER "Applications"
-        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON
-        INTERPROCEDURAL_OPTIMIZATION_RELEASE ON
-    )
+    # licenses.cpp includes res/resource.h to resolve the RCDATA ids.
+    target_include_directories(stuntmaster PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/res)
 endif()
 
 if(STUNTMASTER_ENABLE_PSYCROSS)
@@ -222,10 +221,15 @@ if(STUNTMASTER_BUILD_TESTS)
     add_executable(stuntmaster_quick_save_tests
         tests/quick_save_tests.cpp
         src/stuntmaster/app/launcher_settings.cpp
+        src/stuntmaster/app/logging.cpp
         src/stuntmaster/app/options.cpp
         src/stuntmaster/app/quick_save.cpp
+        src/stuntmaster/app/user_paths.cpp
     )
     target_link_libraries(stuntmaster_quick_save_tests PRIVATE stuntmaster_core)
+    if(WIN32)
+        target_link_libraries(stuntmaster_quick_save_tests PRIVATE shell32 ole32)
+    endif()
     target_include_directories(
         stuntmaster_quick_save_tests PRIVATE src/stuntmaster/app)
     target_compile_features(stuntmaster_quick_save_tests PRIVATE cxx_std_20)
@@ -238,62 +242,13 @@ if(STUNTMASTER_BUILD_TESTS)
 endif()
 
 if(WIN32)
+    # The release artifact is the single, self-configuring executable. It seeds
+    # its own input.ini and config into <Documents>/Stuntmaster on first run and
+    # embeds every third-party license text (viewable in-app and via
+    # --licenses), so nothing needs to ship beside it -- no launcher, docs, or
+    # licenses/ directory. tools/package_windows.ps1 copies the built
+    # stuntmaster.exe to dist/ under the versioned release name and builds the
+    # LGPL corresponding-source bundle; there is deliberately no CPack archive.
     install(TARGETS stuntmaster
         RUNTIME DESTINATION .)
-    if(TARGET stuntmaster_launcher)
-        install(TARGETS stuntmaster_launcher
-            RUNTIME DESTINATION .)
-    endif()
-    install(FILES input.example.ini
-        DESTINATION .
-        RENAME input.ini)
-    install(FILES README.md LICENSE THIRD_PARTY.md
-        DESTINATION .)
-    install(DIRECTORY docs/
-        DESTINATION docs
-        FILES_MATCHING PATTERN "*.md")
-    install(FILES docs/DISTRIBUTION.txt
-        DESTINATION .
-        RENAME README-FIRST.txt)
-
-    if(STUNTMASTER_ENABLE_PSYCROSS)
-        install(FILES
-            "${STUNTMASTER_FFMPEG_ROOT}/share/licenses/ffmpeg/COPYING.LGPLv2.1"
-            DESTINATION licenses
-            RENAME FFmpeg-LGPL-2.1-or-later.txt)
-        install(FILES
-            "${STUNTMASTER_FFMPEG_ROOT}/share/licenses/ffmpeg/COPYING.LGPLv3"
-            DESTINATION licenses
-            RENAME FFmpeg-LGPL-3.0.txt)
-        install(FILES
-            "${STUNTMASTER_FFMPEG_ROOT}/share/licenses/ffmpeg/LICENSE.md"
-            DESTINATION licenses
-            RENAME FFmpeg-LICENSE.md)
-        if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
-            set(STUNTMASTER_VCPKG_SHARE
-                "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")
-            if(EXISTS "${STUNTMASTER_VCPKG_SHARE}/sdl2/copyright")
-                install(FILES "${STUNTMASTER_VCPKG_SHARE}/sdl2/copyright"
-                    DESTINATION licenses RENAME SDL2.txt)
-            endif()
-            if(EXISTS "${STUNTMASTER_VCPKG_SHARE}/openal-soft/copyright")
-                install(FILES
-                    "${STUNTMASTER_VCPKG_SHARE}/openal-soft/copyright"
-                    DESTINATION licenses RENAME OpenAL-Soft.txt)
-            endif()
-            if(EXISTS "${STUNTMASTER_VCPKG_SHARE}/fmt/copyright")
-                install(FILES "${STUNTMASTER_VCPKG_SHARE}/fmt/copyright"
-                    DESTINATION licenses RENAME fmt.txt)
-            endif()
-        endif()
-    endif()
-
-    set(CPACK_GENERATOR ZIP)
-    set(CPACK_PACKAGE_NAME "stuntmaster-pc")
-    set(CPACK_PACKAGE_VENDOR "Stuntmaster PC contributors")
-    set(CPACK_PACKAGE_FILE_NAME
-        "stuntmaster-pc-${PROJECT_VERSION}-windows-x64")
-    set(CPACK_PACKAGE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist")
-    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
-    include(CPack)
 endif()

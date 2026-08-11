@@ -1,4 +1,21 @@
-// Windows resource script: gives stuntmaster.exe its application icon.
-// Resource id 1 is the lowest icon id, so Explorer picks it as the exe icon.
+// Windows resource script for stuntmaster.exe.
+//   - Resource id 1 is the application icon (lowest icon id, so Explorer picks
+//     it as the exe icon).
+//   - The RCDATA entries embed the license texts so the self-contained
+//     executable can show them in-game with no side-car files. The project's
+//     own notices are referenced in place; third-party texts are vendored under
+//     res/licenses/ (they are otherwise build artifacts).
+#include "resource.h"
 
 1 ICON "stuntmaster.ico"
+
+IDR_LICENSE_STUNTMASTER   RCDATA "..\\LICENSE"
+IDR_LICENSE_THIRD_PARTY   RCDATA "..\\THIRD_PARTY.md"
+IDR_LICENSE_FFMPEG_LGPL21 RCDATA "licenses\\FFmpeg-LGPLv2.1.txt"
+IDR_LICENSE_FFMPEG_LGPL3  RCDATA "licenses\\FFmpeg-LGPLv3.txt"
+IDR_LICENSE_FFMPEG_MAIN   RCDATA "licenses\\FFmpeg-LICENSE.md"
+IDR_LICENSE_SDL2          RCDATA "licenses\\SDL2.txt"
+IDR_LICENSE_OPENAL        RCDATA "licenses\\OpenAL-Soft.txt"
+IDR_LICENSE_FMT           RCDATA "licenses\\fmt.txt"
+
+IDR_INPUT_DEFAULT         RCDATA "..\\input.example.ini"

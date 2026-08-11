@@ -26,6 +26,10 @@ extern GrVertex g_vertexBuffer[];
 extern int g_vertexIndex;
 extern const unsigned char* g_sdlKeyboardState;
 extern SDL_Window* g_window;
+// Recreate the GL device against the current window size. PsyCross declares
+// this only in its .cpp, so mirror the extern here; used once at construction
+// to settle a borderless-desktop launch before the window is revealed.
+extern void GR_ResetDevice();
 
 namespace stuntmaster::presentation {
 namespace {
@@ -46,8 +50,12 @@ void applyInputConfig(const std::filesystem::path& path) {
     }
     std::ifstream input{path};
     if (!input) {
-        throw std::runtime_error{
-            "unable to open input configuration: " + path.string()};
+        // Not fatal: the constructor already applied the built-in default
+        // bindings. A missing input.ini (e.g. before it has been seeded, or if
+        // the user deleted it) simply keeps those defaults.
+        std::cerr << "input config not found, using defaults: "
+                  << path.string() << '\n';
+        return;
     }
 
     const std::array keyboard_bindings{
@@ -514,12 +522,15 @@ PsyCrossPresenter::PsyCrossPresenter(
     std::uint32_t render_width,
     std::uint32_t render_height,
     bool capture_frame_trace,
-    bool hidden_window)
+    bool hidden_window,
+    bool fullscreen)
     : capture_frame_trace_(capture_frame_trace),
       window_width_(window_width),
       window_height_(window_height),
       render_width_(render_width),
-      render_height_(render_height) {
+      render_height_(render_height),
+      last_windowed_width_(window_width),
+      last_windowed_height_(window_height) {
     if (window_width == 0U ||
         window_width > static_cast<std::uint32_t>(
             std::numeric_limits<int>::max()) ||
@@ -539,12 +550,39 @@ PsyCrossPresenter::PsyCrossPresenter(
     std::array application_name{
         'S', 't', 'u', 'n', 't', 'm', 'a', 's', 't', 'e', 'r', ' ', 'P', 'C',
         '\0'};
-    g_psxHiddenWindow = hidden_window ? 1 : 0;
+    // Always create the window hidden, then reveal it only after it is in its
+    // final geometry. For a fullscreen launch the SDL borderless-desktop mode is
+    // applied while hidden, so the user never sees a windowed frame flash before
+    // it goes fullscreen. `hidden_window` (the headless capture path) leaves it
+    // hidden for good. Fullscreen is SDL's own SDL_WINDOW_FULLSCREEN_DESKTOP
+    // (DWM-composited borderless): it keeps vsync engaged and stays screenshot-
+    // able, and PsyCross owns the Alt+Enter toggle that switches it at runtime.
+    g_psxHiddenWindow = 1;
     PsyX_Initialise(
         application_name.data(),
         static_cast<int>(window_width),
         static_cast<int>(window_height),
         0);
+    // The on-screen presenter owns its window swaps, bypassing PsyCross's
+    // EndScene swap-interval logic, so it must assert vsync itself. The headless
+    // capture path presents uncapped.
+    vsync_wanted_ = !hidden_window;
+    if (!hidden_window) {
+        if (fullscreen && g_window != nullptr &&
+            SDL_SetWindowFullscreen(
+                g_window, SDL_WINDOW_FULLSCREEN_DESKTOP) == 0) {
+            // Match the window-size globals to the borderless-desktop extent so
+            // the first present composes at the display resolution, exactly as
+            // PsyCross's own Alt+Enter path does after a toggle.
+            SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+            GR_ResetDevice();
+        }
+        // Reveal the window now that it is in its final windowed or fullscreen
+        // geometry.
+        if (g_window != nullptr) {
+            SDL_ShowWindow(g_window);
+        }
+    }
     SDL_DisplayMode display_mode{};
     const auto display_index = g_window != nullptr
         ? SDL_GetWindowDisplayIndex(g_window)
@@ -572,9 +610,18 @@ PsyCrossPresenter::PsyCrossPresenter(
     timestamped_quick_save_key_ = PsyX_LookupKeyboardMapping("F6", 0);
     retime_toggle_key_ = PsyX_LookupKeyboardMapping("F7", 0);
     widescreen_toggle_key_ = PsyX_LookupKeyboardMapping("F8", 0);
+    license_toggle_key_ = PsyX_LookupKeyboardMapping("L", 0);
     PadInitDirect(pad_one_.data(), pad_two_.data());
     PadStartCom();
     initialized_ = true;
+}
+
+bool PsyCrossPresenter::isFullscreen() const noexcept {
+    // SDL_WINDOW_FULLSCREEN_DESKTOP includes the SDL_WINDOW_FULLSCREEN bit, so
+    // mask for the full desktop-fullscreen flag set.
+    return g_window != nullptr &&
+        (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN_DESKTOP) ==
+            SDL_WINDOW_FULLSCREEN_DESKTOP;
 }
 
 PsyCrossPresenter::~PsyCrossPresenter() {
@@ -590,6 +637,30 @@ PsyCrossPresenter::~PsyCrossPresenter() {
 
 std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     PsyX_UpdateInput();
+    // Detect every fullscreen-state edge (including toggles made during an FMV,
+    // which this poll drives) and persist it immediately via the callback -- a
+    // window close hard-exits from PsyCross's event pump, so deferring to the
+    // main loop would lose a change made just before closing.
+    {
+        const bool fs_now = isFullscreen();
+        if (fs_now != last_fullscreen_state_) {
+            last_fullscreen_state_ = fs_now;
+            if (fullscreen_changed_callback_) {
+                fullscreen_changed_callback_(fs_now);
+            }
+        }
+    }
+    // Alt+Enter borderless-desktop fullscreen is owned by PsyCross's own event
+    // handler (SDL_SetWindowFullscreen). The host only observes the resulting
+    // state through isFullscreen() for persistence.
+    //
+    // Track the windowed client size so a user resize is captured for
+    // persistence. Skip while fullscreen, where the window spans the monitor;
+    // the last windowed size then stays frozen for the app to store.
+    if (!isFullscreen() && g_windowWidth > 0 && g_windowHeight > 0) {
+        last_windowed_width_ = static_cast<std::uint32_t>(g_windowWidth);
+        last_windowed_height_ = static_cast<std::uint32_t>(g_windowHeight);
+    }
     const auto keyPressed = [](int key) {
         return g_sdlKeyboardState != nullptr && key > 0 &&
             g_sdlKeyboardState[key] != 0U;
@@ -631,6 +702,20 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     // serializing it into the retail pad buffer's low-byte-first wire order.
     auto buttons =
         decodePsyCrossPadButtons(pad_one_[2], pad_one_[3]);
+    // Host license viewer. 'L' toggles it; while open it consumes navigation and
+    // the guest sees a neutral pad so the game underneath is frozen. Opening from
+    // the in-game menu goes through openLicenseViewer() on the main thread.
+    const auto license_toggle_pressed = keyPressed(license_toggle_key_);
+    if (license_toggle_pressed && !license_toggle_key_down_ &&
+        !license_overlay_.empty()) {
+        license_viewer_active_ = !license_viewer_active_;
+    }
+    license_toggle_key_down_ = license_toggle_pressed;
+    if (license_viewer_active_) {
+        updateLicenseViewerInput(buttons);
+        previous_trace_buttons_ = 0xFFFFU;
+        return 0xFFFFU;
+    }
     if ((debug_overlay_.enabled && toggle_pressed) || quick_save_pressed ||
         quick_load_pressed || timestamped_quick_save_pressed ||
         retime_toggle_pressed || widescreen_toggle_pressed) {
@@ -868,7 +953,92 @@ void PsyCrossPresenter::repeatScanout() {
 void PsyCrossPresenter::finishWindowPresentation() {
     GR_PresentRenderTargetToWindow();
     drawDebugOverlay();
+    drawLicenseOverlay();
+    // Keep the live window swap on vsync. PsyCross's GR_ResetDevice (run at
+    // launch, on every Alt+Enter toggle, and on window resize) resets the swap
+    // interval to 0, so re-assert 1 whenever it has been cleared. The read is a
+    // cheap cached query, so steady-state frames set nothing.
+    if (vsync_wanted_ && SDL_GL_GetSwapInterval() != 1) {
+        SDL_GL_SetSwapInterval(1);
+    }
     GR_SwapWindowBuffers();
+}
+
+void PsyCrossPresenter::setLicenseDocuments(
+    std::vector<LicenseDocument> documents) {
+    license_overlay_.setDocuments(std::move(documents));
+}
+
+void PsyCrossPresenter::openLicenseViewer() {
+    if (!license_overlay_.empty()) {
+        license_viewer_active_ = true;
+    }
+}
+
+void PsyCrossPresenter::closeLicenseViewer() noexcept {
+    license_viewer_active_ = false;
+}
+
+void PsyCrossPresenter::updateLicenseViewerInput(std::uint16_t pad_buttons) {
+    const auto padPressed = [&](std::uint16_t mask) {
+        return (pad_buttons & mask) == 0U;
+    };
+    const auto keyDown = [&](int scancode) {
+        return g_sdlKeyboardState != nullptr &&
+            g_sdlKeyboardState[scancode] != 0U;
+    };
+    // Active-low pad masks: D-pad up/down 0x0010/0x0040, left/right 0x0080/0x0020,
+    // L1/R1 0x0400/0x0800, circle (back) 0x2000.
+    const bool up = padPressed(0x0010U) || keyDown(SDL_SCANCODE_UP);
+    const bool down = padPressed(0x0040U) || keyDown(SDL_SCANCODE_DOWN);
+    const bool page_up = padPressed(0x0400U) || keyDown(SDL_SCANCODE_PAGEUP);
+    const bool page_down = padPressed(0x0800U) || keyDown(SDL_SCANCODE_PAGEDOWN);
+    const bool prev_doc = padPressed(0x0080U) || keyDown(SDL_SCANCODE_LEFT);
+    const bool next_doc = padPressed(0x0020U) || keyDown(SDL_SCANCODE_RIGHT);
+    const bool close = padPressed(0x2000U) || keyDown(SDL_SCANCODE_ESCAPE);
+
+    // Scroll one notch on the rising edge, then auto-repeat on a wall-clock
+    // schedule -- a tap nudges precisely, a hold scrolls smoothly, and the speed
+    // does not change with the input-poll rate (which is faster during FMV
+    // playback and stalls at movie transitions). Fast, coarse movement is on the
+    // page buttons.
+    constexpr int scroll_notch = 3;
+    constexpr auto scroll_initial_delay = std::chrono::milliseconds{350};
+    constexpr auto scroll_repeat_interval = std::chrono::milliseconds{35};
+    const auto now = std::chrono::steady_clock::now();
+    const int direction = (up && !down) ? -1 : ((down && !up) ? 1 : 0);
+    if (direction == 0) {
+        license_scroll_direction_ = 0;
+    } else if (direction != license_scroll_direction_) {
+        license_scroll_direction_ = direction;
+        license_scroll_next_repeat_ = now + scroll_initial_delay;
+        license_overlay_.scrollLines(direction * scroll_notch);
+    } else if (now >= license_scroll_next_repeat_) {
+        // Schedule the next notch relative to now, so a stall (e.g. a movie
+        // transition) never releases a catch-up burst of scrolling.
+        license_scroll_next_repeat_ = now + scroll_repeat_interval;
+        license_overlay_.scrollLines(direction * scroll_notch);
+    }
+    if (page_up && !license_page_up_down_) {
+        license_overlay_.scrollPages(-1);
+    }
+    if (page_down && !license_page_down_down_) {
+        license_overlay_.scrollPages(1);
+    }
+    if (prev_doc && !license_prev_doc_down_) {
+        license_overlay_.previousDocument();
+    }
+    if (next_doc && !license_next_doc_down_) {
+        license_overlay_.nextDocument();
+    }
+    if (close && !license_close_down_) {
+        license_viewer_active_ = false;
+    }
+    license_page_up_down_ = page_up;
+    license_page_down_down_ = page_down;
+    license_prev_doc_down_ = prev_doc;
+    license_next_doc_down_ = next_doc;
+    license_close_down_ = close;
 }
 
 void PsyCrossPresenter::drawDebugOverlay() {
@@ -1031,6 +1201,96 @@ void PsyCrossPresenter::drawNotificationOverlay() {
         y0,
         x1,
         y1,
+        GL_COLOR_BUFFER_BIT,
+        GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+    if (scissor_enabled != GL_FALSE) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+}
+
+void PsyCrossPresenter::drawLicenseOverlay() {
+    if (!license_viewer_active_ || license_overlay_.empty()) {
+        return;
+    }
+    const auto window_width = g_windowWidth > 0
+        ? static_cast<std::uint32_t>(g_windowWidth)
+        : window_width_;
+    const auto window_height = g_windowHeight > 0
+        ? static_cast<std::uint32_t>(g_windowHeight)
+        : window_height_;
+    // Fill ~90% of the window with a readable page. The rasterizer sizes a row
+    // as margin*2 + cols*6*scale wide and margin*2 + rows*9*scale tall
+    // (margin = 4*scale), so invert that to fit the target panel.
+    const auto scale = window_height >= 1000U ? 3U
+        : (window_height >= 400U ? 2U : 1U);
+    const auto target_width = window_width * 9U / 10U;
+    const auto target_height = window_height * 9U / 10U;
+    // Cap the line length at a readable ~80 columns and word-wrap to it, rather
+    // than stretching lines across a wide window. The panel is then a fixed,
+    // book-like width centred in the window.
+    const auto columns = std::clamp<std::size_t>(
+        (target_width / scale - 8U) / 6U, 24U, 80U);
+    const auto rows = std::max<std::size_t>(
+        6U, (target_height / scale - 8U) / 9U);
+    license_overlay_.setViewport(columns, rows);
+    const auto bitmap = rasterizeTextRows(
+        license_overlay_.visibleRows(), scale, {8U, 12U, 28U},
+        {224U, 232U, 255U});
+    if (bitmap.rgba.empty() || bitmap.width == 0U || bitmap.height == 0U) {
+        return;
+    }
+    if (license_overlay_texture_ == 0U) {
+        glGenTextures(1, &license_overlay_texture_);
+        glGenFramebuffers(1, &license_overlay_framebuffer_);
+    }
+    glBindTexture(GL_TEXTURE_2D, license_overlay_texture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA8,
+        static_cast<GLsizei>(bitmap.width),
+        static_cast<GLsizei>(bitmap.height),
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        bitmap.rgba.data());
+
+    const auto scissor_enabled = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, license_overlay_framebuffer_);
+    glFramebufferTexture2D(
+        GL_READ_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        GL_TEXTURE_2D,
+        license_overlay_texture_,
+        0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDrawBuffer(GL_BACK);
+    // Centre the panel, clamped to the window.
+    const auto panel_width = std::min(
+        static_cast<GLint>(bitmap.width), static_cast<GLint>(window_width));
+    const auto panel_height = std::min(
+        static_cast<GLint>(bitmap.height), static_cast<GLint>(window_height));
+    const auto x0 = (static_cast<GLint>(window_width) - panel_width) / 2;
+    const auto y0 = (static_cast<GLint>(window_height) - panel_height) / 2;
+    glBlitFramebuffer(
+        0,
+        static_cast<GLint>(bitmap.height),
+        panel_width,
+        0,
+        x0,
+        y0,
+        x0 + panel_width,
+        y0 + panel_height,
         GL_COLOR_BUFFER_BIT,
         GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);

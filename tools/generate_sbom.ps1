@@ -146,6 +146,12 @@ if ($manifest.'version-string' -ne $ProjectVersion) {
     throw "CMake version $ProjectVersion does not match vcpkg version $($manifest.'version-string')."
 }
 
+# The published identity uses the release version label (a tag override, or
+# "<branch>-<shorthash>" by default; see resolve_release_version.ps1). The
+# internal $ProjectVersion above still gates the vcpkg manifest consistency
+# check, which is independent of the release label.
+$ReleaseVersion = & (Join-Path $PSScriptRoot 'resolve_release_version.ps1')
+
 if (-not $SourceCommit) {
     $SourceCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) {
@@ -301,7 +307,7 @@ $packages = @()
 $packages += New-Package `
     -Id 'SPDXRef-Package-Stuntmaster' `
     -Name 'stuntmaster-pc' `
-    -Version $ProjectVersion `
+    -Version $ReleaseVersion `
     -DownloadLocation "https://github.com/$SourceRepository/tree/$SourceCommit" `
     -License 'MIT' `
     -FilesAnalyzed $true `
@@ -367,8 +373,6 @@ foreach ($requiredRuntimePackage in @('fmt', 'openal-soft', 'sdl2')) {
     }
 }
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::OpenRead($Archive)
 $files = @()
 $relationships = @(
     [ordered]@{
@@ -403,59 +407,31 @@ foreach ($id in $vcpkgPackageIds) {
     }
 }
 
-$archiveFileSha1 = @()
-try {
-    $index = 0
-    foreach ($entry in ($zip.Entries | Where-Object { $_.Name } |
-            Sort-Object FullName)) {
-        ++$index
-        $sha1 = Get-HexDigest -Stream $entry.Open() `
-            -Algorithm ([System.Security.Cryptography.SHA1]::Create())
-        $sha256 = Get-HexDigest -Stream $entry.Open() `
-            -Algorithm ([System.Security.Cryptography.SHA256]::Create())
-        $fileId = 'SPDXRef-File-{0:D4}' -f $index
-        $normalizedName = $entry.FullName.Replace('\', '/')
-        $files += [ordered]@{
-            SPDXID = $fileId
-            fileName = "./$normalizedName"
-            checksums = @(
-                [ordered]@{ algorithm = 'SHA1'; checksumValue = $sha1 },
-                [ordered]@{ algorithm = 'SHA256'; checksumValue = $sha256 }
-            )
-            licenseConcluded = 'NOASSERTION'
-            licenseInfoInFiles = @('NOASSERTION')
-            copyrightText = 'NOASSERTION'
-        }
-        $isFfmpeg = $normalizedName -match `
-            '(?i)(^|/)licenses/FFmpeg-(LGPL-[^/]+\.txt|LICENSE\.md)$'
-        $origin = if ($isFfmpeg) {
-            'SPDXRef-Package-FFmpeg-LGPL'
-        } elseif ($normalizedName -match '(?i)(^|/)licenses/fmt\.txt$') {
-            $vcpkgRuntimePackageIds['fmt']
-        } elseif ($normalizedName -match '(?i)(^|/)licenses/OpenAL-Soft\.txt$') {
-            $vcpkgRuntimePackageIds['openal-soft']
-        } elseif ($normalizedName -match '(?i)(^|/)licenses/SDL2\.txt$') {
-            $vcpkgRuntimePackageIds['sdl2']
-        } else {
-            $null
-        }
-        $archiveFileSha1 += $sha1
-        $relationships += [ordered]@{
-            spdxElementId = 'SPDXRef-Package-Stuntmaster'
-            relationshipType = 'CONTAINS'
-            relatedSpdxElement = $fileId
-        }
-        if ($origin) {
-            $relationships += [ordered]@{
-                spdxElementId = $fileId
-                relationshipType = 'GENERATED_FROM'
-                relatedSpdxElement = $origin
-            }
-        }
-    }
-} finally {
-    $zip.Dispose()
+# The release artifact is the single, self-configuring executable, not an
+# archive of many files. Describe that one file. The FFmpeg/fmt/OpenAL/SDL2
+# license texts it used to ship as separate files are now embedded in the
+# executable; those components stay represented by the runtime component
+# packages above (DEPENDS_ON), so no per-file GENERATED_FROM edges are emitted.
+$exeSha1 = Get-HexDigest -Stream ([IO.File]::OpenRead($Archive)) `
+    -Algorithm ([Security.Cryptography.SHA1]::Create())
+$fileId = 'SPDXRef-File-0001'
+$files += [ordered]@{
+    SPDXID = $fileId
+    fileName = "./$([IO.Path]::GetFileName($Archive))"
+    checksums = @(
+        [ordered]@{ algorithm = 'SHA1'; checksumValue = $exeSha1 },
+        [ordered]@{ algorithm = 'SHA256'; checksumValue = $archiveSha256 }
+    )
+    licenseConcluded = 'NOASSERTION'
+    licenseInfoInFiles = @('NOASSERTION')
+    copyrightText = 'NOASSERTION'
 }
+$relationships += [ordered]@{
+    spdxElementId = 'SPDXRef-Package-Stuntmaster'
+    relationshipType = 'CONTAINS'
+    relatedSpdxElement = $fileId
+}
+$archiveFileSha1 = @($exeSha1)
 
 function Get-VerificationCode {
     param([Parameter(Mandatory = $true)][string[]] $Hashes)
@@ -473,7 +449,7 @@ $document = [ordered]@{
     spdxVersion = 'SPDX-2.3'
     dataLicense = 'CC0-1.0'
     SPDXID = 'SPDXRef-DOCUMENT'
-    name = "stuntmaster-pc-$ProjectVersion-windows-x64"
+    name = "stuntmaster-pc-$ReleaseVersion-windows-x64"
     documentNamespace = $DocumentNamespace
     creationInfo = [ordered]@{
         created = $sourceCreationTime
@@ -540,7 +516,7 @@ if ($SummaryPath) {
     $archiveName = [IO.Path]::GetFileName($Archive)
     $jsonName = [IO.Path]::GetFileName($OutputPath)
     $summaryLines = [Collections.Generic.List[string]]::new()
-    $summaryLines.Add("# Software bill of materials - stuntmaster-pc $ProjectVersion")
+    $summaryLines.Add("# Software bill of materials - stuntmaster-pc $ReleaseVersion")
     $summaryLines.Add('')
     $summaryLines.Add('> Human-readable companion to the authoritative SPDX 2.3 JSON document. This Markdown file is not an additional SPDX serialization.')
     $summaryLines.Add('')
@@ -548,8 +524,8 @@ if ($SummaryPath) {
     $summaryLines.Add('')
     $summaryLines.Add('| Field | Value |')
     $summaryLines.Add('|---|---|')
-    $summaryLines.Add(('| Release archive | `{0}` |' -f $archiveName))
-    $summaryLines.Add(('| Archive SHA-256 | `{0}` |' -f $archiveSha256))
+    $summaryLines.Add(('| Release executable | `{0}` |' -f $archiveName))
+    $summaryLines.Add(('| Executable SHA-256 | `{0}` |' -f $archiveSha256))
     $summaryLines.Add(('| Authoritative SBOM | `{0}` |' -f $jsonName))
     $summaryLines.Add(('| SBOM SHA-256 | `{0}` |' -f $jsonSha256))
     $summaryLines.Add(('| Source repository | [`{0}`](https://github.com/{0}) |' -f $SourceRepository))

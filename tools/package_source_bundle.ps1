@@ -56,11 +56,9 @@ function Remove-VerifiedTree {
     Remove-Item -LiteralPath $resolvedPath -Recurse -Force
 }
 
-$cmake = Get-Content -LiteralPath (Join-Path $RepoRoot 'CMakeLists.txt') -Raw
-if ($cmake -notmatch 'project\(stuntmaster_pc\s+VERSION\s+([^\s\)]+)') {
-    throw 'Could not determine the project version from CMakeLists.txt.'
-}
-$ProjectVersion = $Matches[1]
+# The source bundle's version matches the executable it accompanies: a tag
+# override, or "<branch>-<shorthash>" by default (see resolve_release_version).
+$ProjectVersion = & (Join-Path $PSScriptRoot 'resolve_release_version.ps1')
 if (-not $SourceCommit) {
     $SourceCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
 }

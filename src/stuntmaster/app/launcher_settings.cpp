@@ -10,11 +10,6 @@ namespace stuntmaster::app {
 
 namespace {
 
-constexpr bool supportedHeight(std::uint32_t height) noexcept {
-    return height == 480U || height == 720U || height == 1080U ||
-        height == 1440U;
-}
-
 std::string trim(std::string value) {
     const auto whitespace = [](unsigned char character) {
         return std::isspace(character) != 0;
@@ -54,6 +49,13 @@ bool parseBoolean(std::string_view value, bool& out) noexcept {
     return false;
 }
 
+bool parseUnsigned(std::string_view value, std::uint32_t& out) noexcept {
+    const auto parsed = std::from_chars(
+        value.data(), value.data() + value.size(), out);
+    return parsed.ec == std::errc{} &&
+        parsed.ptr == value.data() + value.size();
+}
+
 } // namespace
 
 std::filesystem::path launcherSettingsPath(
@@ -73,11 +75,9 @@ std::optional<LauncherSettings> loadLauncherSettings(
         return std::nullopt;
     }
 
+    // Start from the defaults so an older or hand-edited file that omits keys
+    // still loads; only malformed values or a malformed line are rejected.
     LauncherSettings settings;
-    bool have_directory = false;
-    bool have_resolution = false;
-    bool have_sixty_hz = false;
-    bool have_widescreen = false;
     bool in_launcher_section = false;
     std::string line;
     while (std::getline(input, line)) {
@@ -103,31 +103,38 @@ std::optional<LauncherSettings> loadLauncherSettings(
         const auto value = trim(line.substr(separator + 1U));
         if (key == "game_directory") {
             settings.game_directory = pathFromUtf8(value);
-            have_directory = !settings.game_directory.empty();
-        } else if (key == "resolution_height") {
-            const auto parsed = std::from_chars(
-                value.data(), value.data() + value.size(),
-                settings.resolution_height);
-            have_resolution = parsed.ec == std::errc{} &&
-                parsed.ptr == value.data() + value.size() &&
-                supportedHeight(settings.resolution_height);
-            if (!have_resolution) {
-                return std::nullopt;
-            }
         } else if (key == "sixty_hz") {
-            have_sixty_hz = parseBoolean(value, settings.sixty_hz);
-            if (!have_sixty_hz) {
+            if (!parseBoolean(value, settings.sixty_hz)) {
                 return std::nullopt;
             }
         } else if (key == "widescreen") {
-            have_widescreen = parseBoolean(value, settings.widescreen);
-            if (!have_widescreen) {
+            if (!parseBoolean(value, settings.widescreen)) {
+                return std::nullopt;
+            }
+        } else if (key == "fullscreen") {
+            if (!parseBoolean(value, settings.fullscreen)) {
+                return std::nullopt;
+            }
+        } else if (key == "render_width") {
+            if (!parseUnsigned(value, settings.render_width)) {
+                return std::nullopt;
+            }
+        } else if (key == "render_height") {
+            if (!parseUnsigned(value, settings.render_height)) {
+                return std::nullopt;
+            }
+        } else if (key == "window_width") {
+            if (!parseUnsigned(value, settings.window_width)) {
+                return std::nullopt;
+            }
+        } else if (key == "window_height") {
+            if (!parseUnsigned(value, settings.window_height)) {
                 return std::nullopt;
             }
         }
+        // Unknown keys are ignored for forward compatibility.
     }
-    if (!input.eof() || !have_directory || !have_resolution ||
-        !have_sixty_hz || !have_widescreen) {
+    if (!input.eof()) {
         return std::nullopt;
     }
     return settings;
@@ -137,9 +144,8 @@ bool saveLauncherSettings(
     const std::filesystem::path& path,
     const LauncherSettings& settings,
     std::string& error) {
-    if (settings.game_directory.empty() ||
-        !supportedHeight(settings.resolution_height)) {
-        error = "The launcher settings are incomplete.";
+    if (settings.game_directory.empty()) {
+        error = "The settings are incomplete (no game folder).";
         return false;
     }
     std::ofstream output{path, std::ios::binary | std::ios::trunc};
@@ -149,9 +155,13 @@ bool saveLauncherSettings(
     }
     output << "[launcher]\n"
            << "game_directory=" << pathToUtf8(settings.game_directory) << '\n'
-           << "resolution_height=" << settings.resolution_height << '\n'
            << "sixty_hz=" << (settings.sixty_hz ? 1 : 0) << '\n'
-           << "widescreen=" << (settings.widescreen ? 1 : 0) << '\n';
+           << "widescreen=" << (settings.widescreen ? 1 : 0) << '\n'
+           << "fullscreen=" << (settings.fullscreen ? 1 : 0) << '\n'
+           << "render_width=" << settings.render_width << '\n'
+           << "render_height=" << settings.render_height << '\n'
+           << "window_width=" << settings.window_width << '\n'
+           << "window_height=" << settings.window_height << '\n';
     if (!output) {
         error = "Could not write " + path.string() + '.';
         return false;
@@ -162,19 +172,25 @@ bool saveLauncherSettings(
 bool saveRuntimeLauncherSettings(
     const std::filesystem::path& path,
     const std::filesystem::path& fallback_game_directory,
-    std::uint32_t resolution_height,
+    std::uint32_t render_width,
+    std::uint32_t render_height,
+    std::uint32_t window_width,
+    std::uint32_t window_height,
     bool sixty_hz,
     bool widescreen,
+    bool fullscreen,
     std::string& error) {
     auto settings = loadLauncherSettings(path).value_or(LauncherSettings{});
     if (settings.game_directory.empty()) {
         settings.game_directory = fallback_game_directory;
     }
-    if (supportedHeight(resolution_height)) {
-        settings.resolution_height = resolution_height;
-    }
+    settings.render_width = render_width;
+    settings.render_height = render_height;
+    settings.window_width = window_width;
+    settings.window_height = window_height;
     settings.sixty_hz = sixty_hz;
     settings.widescreen = widescreen;
+    settings.fullscreen = fullscreen;
     return saveLauncherSettings(path, settings, error);
 }
 

@@ -68,6 +68,11 @@ constexpr std::uint8_t pad_struct_actuators_per_comb = 2U;
 constexpr std::uint32_t host_menu_push_address = 0x80010D08U;
 constexpr std::uint32_t host_menu_screen_alias_address = 0x80010E0CU;
 constexpr std::uint32_t host_menu_id_restore_address = 0x80010E18U;
+// MenuMgr::SetTopMenu(manager, menuHash). Establishes a manager's root menu;
+// SelfInit__9feMenuMgr calls it for Menu_Title when the pause menu is built,
+// before it is ever displayed. Hooking it here makes the injected "Licenses"
+// row exist on the first pause-open, not only after a submenu round-trip.
+constexpr std::uint32_t set_top_menu_address = 0x8005F7DCU;
 // Free space between the BIOS-HLE device table and the retail-patch arena.
 // No instruction is stored here: the boundary is consumed before fetch.
 constexpr std::uint32_t host_menu_callback_address = 0x80002FF0U;
@@ -82,6 +87,26 @@ constexpr std::uint32_t sound_music_item_hash = 0xB3DA1CE9U;
 constexpr std::uint32_t resolution_item_hash = 0xB47983DEU;
 constexpr std::uint32_t sound_stereo_item_hash = 0x3D030EFAU;
 constexpr std::size_t iso_sector_size = 2048U;
+
+// Pause MAIN MENU = Menu_Title. Native "LICENSES" row injection targets.
+constexpr std::uint32_t menu_title_hash = 0x062B99E2U;
+constexpr std::uint32_t hd_item_button_vtable = 0x800CD7A0U;
+// Host-chosen identity for the injected item; distinct from every retail item
+// hash, matched in dispatchHostMenuCallback to raise show_licenses.
+constexpr std::uint32_t licenses_item_hash = 0x4C494345U; // 'LICE'
+// Layout inside R3000Runtime::menu_object_arena_base (2 KB reserved data span).
+// Overlay copy needs 8 + (nprims+1)*8 bytes; a title overlay holds ~6 prims.
+constexpr std::uint32_t menu_arena_overlay = 0x80004000U;   // relocated overlay
+constexpr std::uint32_t menu_arena_textobj = 0x80004080U;   // cloned xcTextObj
+constexpr std::uint32_t menu_arena_button = 0x800040C0U;    // hdItemButton
+constexpr std::uint32_t menu_arena_string = 0x800040E0U;    // "LICENSES\0"
+// Row Y translation is guest screenY<<16 (~1 guest pixel = 0x10000). The six
+// re-spaced rows keep the original top..bottom extent (so the bottom row lands
+// where the stock bottom row sat, safely inside the frame) and are nudged down
+// by a couple of pixels so the block is not top-heavy. Extra spread is avoided:
+// it pushes the bottom row onto the frame border.
+constexpr std::uint32_t menu_rows_down_bias = 0x00020000U;  // ~2 px lower
+constexpr std::uint32_t menu_rows_extra_span = 0x00000000U; // keep stock extent
 
 std::vector<std::byte> asBytes(std::string_view text, std::size_t size) {
     std::vector<std::byte> result(size);
@@ -126,6 +151,7 @@ std::span<const std::uint32_t> RetailHle::executionBoundaries() noexcept {
         host_menu_push_address,
         host_menu_screen_alias_address,
         host_menu_id_restore_address,
+        set_top_menu_address,
         title_movie_fade_complete_address,
         game_play_movie_address,
         draw_sync_address,
@@ -243,6 +269,9 @@ RetailHleResult RetailHle::dispatch(psx::R3000Runtime& runtime) {
     }
     if (runtime.state().pc == host_menu_id_restore_address) {
         return restoreHostMenuId(runtime);
+    }
+    if (runtime.state().pc == set_top_menu_address) {
+        return injectLicensesOnSetTopMenu(runtime);
     }
     if (runtime.state().pc == title_movie_fade_complete_address) {
         if (movie_transition_sink_) {
@@ -678,6 +707,232 @@ void RetailHle::setHostMenuState(
     host_menu_widescreen_cull_ = widescreen_cull;
 }
 
+bool RetailHle::ensureLicensesMenuItem(
+    psx::R3000Runtime& runtime, std::uint32_t manager) {
+    if (!host_menu_enabled_ || manager == 0U) {
+        return false;
+    }
+    const auto rd = [&](std::uint32_t address) {
+        std::uint32_t value{};
+        return runtime.read32(address, value) ? value : 0U;
+    };
+    // Locate the pause MAIN MENU (Menu_Title) in the manager's menu list.
+    std::uint32_t title = 0U;
+    for (std::uint32_t candidate = rd(manager + 0x30U), guard = 0U;
+         candidate != 0U && guard < 32U;
+         candidate = rd(candidate), ++guard) {
+        if (rd(candidate + 0x0CU) == menu_title_hash) {
+            title = candidate;
+            break;
+        }
+    }
+    if (title == 0U) {
+        return false;
+    }
+    // Idempotent: skip if this menu instance already carries the row.
+    for (std::uint32_t item = rd(title + 0x18U), guard = 0U;
+         item != 0U && guard < 32U;
+         item = rd(item), ++guard) {
+        if (rd(item + 0x18U) == licenses_item_hash) {
+            return false;
+        }
+    }
+    const auto section = rd(manager + 0x20U);
+    const auto overlay_inv = section != 0U ? rd(section + 0x14U) : 0U;
+    const auto screen_inv = section != 0U ? rd(section + 0x0CU) : 0U;
+    if (overlay_inv == 0U || screen_inv == 0U) {
+        return false;
+    }
+    const auto first_item = rd(title + 0x18U);
+    const auto title_text = first_item != 0U ? rd(first_item + 0x0CU) : 0U;
+    if (title_text == 0U) {
+        return false;
+    }
+    // The overlay that draws the title prims is the one whose prim array holds
+    // the first item's text object.
+    std::uint32_t target_overlay = 0U;
+    std::uint32_t overlay_inv_value_addr = 0U;
+    const auto overlay_count = rd(overlay_inv + 0x08U);
+    for (std::uint32_t i = 0U; i < overlay_count && i < 64U; ++i) {
+        const auto value_addr = overlay_inv + 0x10U + i * 8U;
+        const auto overlay = rd(value_addr);
+        if (overlay == 0U) {
+            continue;
+        }
+        const auto count = rd(overlay + 4U);
+        for (std::uint32_t p = 0U; p < count && p < 64U; ++p) {
+            if (rd(overlay + 0x0CU + p * 8U) == title_text) {
+                target_overlay = overlay;
+                overlay_inv_value_addr = value_addr;
+                break;
+            }
+        }
+        if (target_overlay != 0U) {
+            break;
+        }
+    }
+    if (target_overlay == 0U) {
+        return false;
+    }
+    const auto nprims = rd(target_overlay + 4U);
+    if (nprims == 0U || nprims > 32U) {
+        return false;
+    }
+    // Clone the last existing item's text object: an unselected label with a
+    // valid font/style and base colour.
+    const auto tail_item = rd(title + 0x1CU);
+    const auto clone_source =
+        tail_item != 0U ? rd(tail_item + 0x0CU) : title_text;
+    if (clone_source == 0U) {
+        return false;
+    }
+
+    // --- reads validated; construct arena objects, then splice references ---
+    // 1. Clone the text object (0x40 bytes covers the ~0x3C struct + frame[1]).
+    for (std::uint32_t offset = 0U; offset < 0x40U; offset += 4U) {
+        if (!runtime.write32(
+                menu_arena_textobj + offset, rd(clone_source + offset))) {
+            return false;
+        }
+    }
+    // 2. Repoint the clone's active-frame string at the host "LICENSES" buffer.
+    std::uint8_t frame{};
+    if (!runtime.read8(menu_arena_textobj + 0x2DU, frame) ||
+        !writeText(runtime, menu_arena_string, "Licenses") ||
+        !runtime.write32(
+            menu_arena_textobj + 0x38U +
+                static_cast<std::uint32_t>(frame) * 4U,
+            menu_arena_string)) {
+        return false;
+    }
+    // 3. Capture the current item block's vertical extent. The Y translate at
+    //    text object +0x18 is screenY<<16. The rows are re-spaced in step 9 so
+    //    the extra row fits inside the fixed-size menu frame instead of below
+    //    it; here we only record the top (min) and bottom (max) rows.
+    std::uint32_t min_y = 0xFFFFFFFFU;
+    std::uint32_t max_y = 0U;
+    std::uint32_t item_rows = 0U;
+    for (std::uint32_t item = rd(title + 0x18U), guard = 0U;
+         item != 0U && guard < 16U;
+         item = rd(item), ++guard) {
+        const auto obj = rd(item + 0x0CU);
+        if (obj != 0U) {
+            const auto y = rd(obj + 0x18U);
+            min_y = std::min(min_y, y);
+            max_y = std::max(max_y, y);
+            ++item_rows;
+        }
+    }
+    // 4. Relocate the overlay: copy header + existing entries, append our prim,
+    //    bump the count. The packed section leaves no room to grow in place.
+    for (std::uint32_t offset = 0U; offset < 8U + nprims * 8U; offset += 4U) {
+        if (!runtime.write32(
+                menu_arena_overlay + offset, rd(target_overlay + offset))) {
+            return false;
+        }
+    }
+    if (!runtime.write32(menu_arena_overlay + 8U + nprims * 8U,
+                         licenses_item_hash) ||
+        !runtime.write32(menu_arena_overlay + 0x0CU + nprims * 8U,
+                         menu_arena_textobj) ||
+        !runtime.write32(menu_arena_overlay + 4U, nprims + 1U)) {
+        return false;
+    }
+    // 5. Build the hdItemButton (next/prev linked during the splice below).
+    if (!runtime.write32(menu_arena_button + 0x00U, 0U) ||
+        !runtime.write32(menu_arena_button + 0x04U, 0U) ||
+        !runtime.write32(menu_arena_button + 0x08U, hd_item_button_vtable) ||
+        !runtime.write32(menu_arena_button + 0x0CU, menu_arena_textobj) ||
+        !runtime.write32(
+            menu_arena_button + 0x10U, host_menu_callback_address) ||
+        !runtime.write32(menu_arena_button + 0x14U, 0U) ||
+        !runtime.write32(menu_arena_button + 0x18U, licenses_item_hash)) {
+        return false;
+    }
+    // 6. Repoint the section overlay inventory at the relocated overlay.
+    if (!runtime.write32(overlay_inv_value_addr, menu_arena_overlay)) {
+        return false;
+    }
+    // 7. Repoint every owning xcScreen entry so screen switches still toggle
+    //    the relocated overlay's visibility.
+    const auto screen_count = rd(screen_inv + 0x08U);
+    for (std::uint32_t i = 0U; i < screen_count && i < 64U; ++i) {
+        const auto screen = rd(screen_inv + 0x10U + i * 8U);
+        if (screen == 0U) {
+            continue;
+        }
+        const auto novl = rd(screen);
+        for (std::uint32_t o = 0U; o < novl && o < 64U; ++o) {
+            const auto slot = screen + 4U + o * 4U;
+            if (rd(slot) == target_overlay &&
+                !runtime.write32(slot, menu_arena_overlay)) {
+                return false;
+            }
+        }
+    }
+    // 8. Append the button to Menu_Title's item list (ccMinList: head@+0x18,
+    //    tail@+0x1C; nodes link next@+0/prev@+4).
+    const auto old_tail = rd(title + 0x1CU);
+    if (old_tail != 0U) {
+        if (!runtime.write32(old_tail + 0x00U, menu_arena_button) ||
+            !runtime.write32(menu_arena_button + 0x04U, old_tail)) {
+            return false;
+        }
+    } else if (!runtime.write32(title + 0x18U, menu_arena_button)) {
+        return false;
+    }
+    if (!runtime.write32(title + 0x1CU, menu_arena_button)) {
+        return false;
+    }
+    // 9. Re-space every row evenly so the extra row fits inside the fixed-size
+    //    menu frame. The block spans the original top..bottom extent plus a
+    //    little extra spread, shifted down slightly so it sits centered rather
+    //    than top-heavy.
+    const auto total_rows = item_rows + 1U;
+    if (min_y <= max_y && total_rows >= 2U) {
+        const auto span = (max_y - min_y) + menu_rows_extra_span;
+        std::uint32_t index = 0U;
+        for (std::uint32_t item = rd(title + 0x18U), guard = 0U;
+             item != 0U && guard < 16U;
+             item = rd(item), ++guard) {
+            const auto obj = rd(item + 0x0CU);
+            if (obj != 0U) {
+                const auto y = min_y + menu_rows_down_bias +
+                    static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(span) * index /
+                        (total_rows - 1U));
+                if (!runtime.write32(obj + 0x18U, y)) {
+                    return false;
+                }
+                ++index;
+            }
+        }
+    }
+    return true;
+}
+
+RetailHleResult RetailHle::injectLicensesOnSetTopMenu(
+    psx::R3000Runtime& runtime) {
+    if (!host_menu_enabled_) {
+        return {};
+    }
+    static constexpr std::array fingerprint{
+        0x27BDFFE0U, 0xAFB00010U, 0x00808021U, 0xAFB10014U};
+    for (std::size_t index = 0U; index < fingerprint.size(); ++index) {
+        std::uint32_t word{};
+        if (!runtime.read32(
+                set_top_menu_address +
+                    static_cast<std::uint32_t>(index * 4U),
+                word) ||
+            word != fingerprint[index]) {
+            return {};
+        }
+    }
+    // Pre-hook: retail still runs SetTopMenu. $a0 is the manager.
+    static_cast<void>(ensureLicensesMenuItem(runtime, runtime.state().gpr[4]));
+    return {};
+}
+
 RetailHleResult RetailHle::inspectHostMenuPush(
     psx::R3000Runtime& runtime) {
     if (!host_menu_enabled_) {
@@ -700,6 +955,11 @@ RetailHleResult RetailHle::inspectHostMenuPush(
     if (menu == 0U || !runtime.read32(menu + 0x0CU, menu_hash)) {
         return {};
     }
+
+    // Splice the native "LICENSES" row into the pause MAIN MENU. Idempotent and
+    // independent of which submenu triggered this push; it only acts once
+    // Menu_Title exists in the manager.
+    static_cast<void>(ensureLicensesMenuItem(runtime, runtime.state().gpr[4]));
 
     const auto rewriteItem = [&](std::uint32_t item,
                                  std::string_view label,
@@ -1073,6 +1333,10 @@ RetailHleResult RetailHle::dispatchHostMenuCallback(
         if (!writeText(runtime, resolution_item + 0x38U, text)) {
             return {RetailHleStatus::memory_fault, resolution_item};
         }
+    } else if (item_hash == licenses_item_hash) {
+        // Injected MAIN MENU row: the guest owns navigation/rendering; selecting
+        // it only asks the host to open the license viewer overlay.
+        event = {HostMenuCommand::show_licenses, 0U, 0U, 0U};
     } else {
         return {RetailHleStatus::memory_fault, item};
     }

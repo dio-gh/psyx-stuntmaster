@@ -182,6 +182,22 @@ public:
             interrupt_stack_top - interrupt_stack_size,
         "the patch arena must not overlap the interrupt stack");
 
+    // Host-constructed guest *data objects* (not code) live here: relocated
+    // menu overlays, cloned text objects, and menu items the host splices into
+    // retail structures for the native in-game license viewer. It shares the
+    // same kernel-reserved, retail-never-allocated span as the patch arena and
+    // interrupt stack, sitting just above the 4 KB patch arena.
+    static constexpr std::uint32_t menu_object_arena_base = 0x80004000U;
+    static constexpr std::uint32_t menu_object_arena_size = 2U * 1024U;
+
+    static_assert(
+        menu_object_arena_base >= patch_arena_base + patch_arena_size,
+        "the menu object arena must not overlap the patch arena");
+    static_assert(
+        menu_object_arena_base + menu_object_arena_size <=
+            interrupt_stack_top - interrupt_stack_size,
+        "the menu object arena must not overlap the interrupt stack");
+
     R3000Runtime();
     R3000Runtime(const R3000Runtime& other);
     R3000Runtime& operator=(const R3000Runtime& other);

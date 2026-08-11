@@ -29,16 +29,17 @@ Preserves the original game logic while adding modern presentation and quality-o
 
 ## How to Play
 
-1. Download `stuntmaster-pc-<version>-windows-x64.zip` from Releases.
-2. Extract the entire archive to a writable folder.
-3. Run `stuntmaster-launcher.exe`.
-4. Select the folder containing the game's `.cue` and `.bin` files, choose the
-   display options, and press **Play**.
+1. Download `stuntmaster-pc-<version>-windows-x64.exe` from Releases.
+2. Run it. On first launch it prompts for the folder containing the game's
+   `.cue` and `.bin` files.
 
-The launcher saves portable settings in `stuntmaster.ini` beside the
-executables. The game creates `saves\SLUS-00684.mcr` for normal in-game saves
-and stores quick saves in the same `saves` directory. Moving the extracted
-folder moves those settings and saves with it.
+That single executable is everything you need: no launcher, no archive to
+extract, no side files. It is self-configuring, storing its settings, input
+bindings, logs, and saves under `Documents\Stuntmaster` (`saves\SLUS-00684.mcr`
+for normal in-game saves, plus quick saves in the same `saves` directory). All
+third-party license texts are embedded and viewable in-game or with
+`stuntmaster.exe --licenses`. Because nothing is written beside the executable,
+you can keep it anywhere and move it freely.
 
 Only this disc revision is supported:
 
@@ -49,8 +50,8 @@ Only this disc revision is supported:
 | Layout | Single-track MODE2/2352 BIN/CUE |
 | BIN SHA-256 | `0DFC8FCB055E2EBF22380F5FF7568706376588FDCF8C4086DCFCA67DC8295E14` |
 
-The launcher expects exactly one `.cue` file in the selected folder. The host
-validates the retail executable and disc data before running them.
+The first-launch picker expects exactly one `.cue` file in the selected folder.
+The host validates the retail executable and disc data before running them.
 
 ## Controls
 
@@ -137,7 +138,7 @@ tools\build_windows.cmd -CoreOnly
 tools\build_windows.cmd -SkipTests
 ```
 
-The full build outputs `stuntmaster.exe` and `stuntmaster-launcher.exe` under
+The full build outputs the single, self-configuring `stuntmaster.exe` under
 `build\windows\<configuration>`. The core-only build, useful for emulator and
 disc-boundary work, goes under `build\windows-core\<configuration>`.
 
@@ -147,7 +148,7 @@ You can still configure CMake directly. Set
 and point `STUNTMASTER_FFMPEG_ROOT` at the source-built install root containing
 `include` and `lib`. The build script is the reference configuration.
 
-## Create a release archive
+## Create a release build
 
 Run:
 
@@ -156,20 +157,21 @@ tools\package_windows.cmd
 ```
 
 This performs a cleanly configured Release build, runs the deterministic test
-suite, invokes the CMake/CPack install rules, verifies the archive contents,
-and prints its SHA-256. The upload-ready artifact is:
+suite, confirms FFmpeg is statically linked (no FFmpeg DLLs imported), and
+stages the single upload-ready executable:
 
 ```text
-dist\stuntmaster-pc-0.0.1-windows-x64.zip
+dist\stuntmaster-pc-0.0.1-windows-x64.exe
 ```
 
-The archive contains the launcher, game host, input defaults, project notices,
-and third-party licenses. FFmpeg is statically linked, so its five former DLLs
-are absent. It intentionally contains no disc image, extracted retail asset,
-user configuration, or save file. Automated Releases also publish a separate
-`stuntmaster-pc-<version>-corresponding-source.zip` with the exact application,
-PsyCross, and signed FFmpeg source needed to modify FFmpeg and relink; see
-[FFmpeg source and relinking](docs/FFMPEG_RELINKING.md).
+That one self-configuring executable is the entire distribution -- no launcher,
+archive, side files, or `licenses/` directory, because it seeds its own input
+defaults into `Documents\Stuntmaster` on first run and embeds every third-party
+license text. It contains no disc image, extracted retail asset, user
+configuration, or save file. Alongside it, automated Releases also publish a
+separate `stuntmaster-pc-<version>-corresponding-source.zip` with the exact
+application, PsyCross, and signed FFmpeg source needed to modify FFmpeg and
+relink; see [FFmpeg source and relinking](docs/FFMPEG_RELINKING.md).
 
 ## Development commands
 
