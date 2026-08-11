@@ -1,6 +1,6 @@
 {
   "name": "stuntmaster-pc",
-  "version-string": "0.0.1",
+  "version-string": "0.0.4",
   "builtin-baseline": "8779f47d2db0785ee034b47fdfdcdb0e88b7010e",
   "dependencies": [
     "openal-soft",

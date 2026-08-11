@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(stuntmaster_pc VERSION 0.0.1 LANGUAGES C CXX)
+project(stuntmaster_pc VERSION 0.0.4 LANGUAGES C CXX)
 
 option(STUNTMASTER_BUILD_TESTS "Build deterministic core tests" ON)
 option(STUNTMASTER_ENABLE_PSYCROSS "Build the PsyCross presentation backend" OFF)
