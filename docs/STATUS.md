@@ -104,6 +104,11 @@ The following flags are diagnostic or experimental, not recommended defaults:
   pass normally remains authored-rate gated, but services active pushers,
   runners on dynamic obstacles, and airborne jump/fall humanoids on held
   updates, plus every ladder state whose one-update contact bit cannot wait.
+  Fire contact is re-issued for every burning humanoid on held updates; the
+  complete list scan prevents an already-burning player from starving a later
+  NPC while leaving the pit's damage tick at authored cadence. The title
+  screen also publishes its own master hold decision immediately before the
+  shared menu-colour step, keeping PRESS START at the authored blink rate.
   The Pushable displacement and Conveyor's direct player carry remain gated
   to authored ticks inside those exceptions, preventing 2x movement while
   pushing or running on a belt.

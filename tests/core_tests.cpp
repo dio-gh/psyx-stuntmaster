@@ -4026,10 +4026,10 @@ void retimeOverlayHooksActivatePerFingerprint() {
     using Runtime = stuntmaster::psx::R3000Runtime;
     using stuntmaster::game::RetimeHook;
     const auto overlays = stuntmaster::game::retimeOverlayHooks();
-    // The sixteen recompute/gate hooks, the seventeen overlay held prologues,
+    // The seventeen recompute/gate hooks, the seventeen overlay held prologues,
     // and the thirteen Platform divide-based conversion hooks (including the
     // carried-velocity snapshot and bobbed-Y preservation).
-    assert(overlays.size() == 46U);
+    assert(overlays.size() == 47U);
     for (std::size_t index = 1U; index < overlays.size(); ++index) {
         assert(overlays[index - 1U].hook.pc < overlays[index].hook.pc);
     }
@@ -4624,6 +4624,60 @@ void authoredCounterHooksKeepTheirCadence() {
         assert((run(1U, 5U) == std::array<std::uint32_t, 3U>{0xABCD0000U, 6U, 1U}));
     }
 
+    // The title loop has its own decider immediately before
+    // `TitleScreen::SelfUpdate` calls the shared MenuColorNext gate. It runs
+    // neither the play nor menu decider, so this prevents the PRESS START
+    // colour pulse from consuming a stale counted phase on every 60 Hz update.
+    // The hook also models the displaced colour-field argument calculation.
+    {
+        constexpr std::uint32_t site = 0x80011938U;
+        const auto overlays = stuntmaster::game::retimeOverlayHooks();
+        const auto found = std::find_if(
+            overlays.begin(), overlays.end(), [](const auto& overlay) {
+                return overlay.hook.pc == site;
+            });
+        assert(found != overlays.end());
+        const auto run = [&](std::uint32_t divisor, std::uint32_t seed_accum) {
+            Runtime runtime;
+            const std::array<RetimeHook, 1U> span{found->hook};
+            RetimeHooks hooks{span};
+            const std::array<std::uint32_t, 4U> window{
+                encodeI(0x09, 16, 4, 0x34),  // addiu $a0,$s0,0x34
+                encodeI(0x2B, 29, 31, 0x24), // sw $ra,0x24($sp)
+                jr_ra,
+                0U,
+            };
+            assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+            hooks.program(divisor);
+            hooks.state().clock_accum = seed_accum;
+            runtime.setRetimeHooks(&hooks);
+            hooks.setActive(true);
+            runtime.reset(site, 0U, stack);
+            runtime.setRegister(16, 0x80120000U); // $s0 = TitleScreen
+            runtime.setRegister(31, Runtime::return_sentinel);
+            for (int executed = 0; executed < 16; ++executed) {
+                if (runtime.atReturnSentinel()) {
+                    break;
+                }
+                const auto step = runtime.step();
+                assert(step.reason ==
+                       stuntmaster::psx::R3000StopReason::running);
+            }
+            assert(runtime.atReturnSentinel());
+            runtime.settleLoadDelay();
+            return std::array<std::uint32_t, 3U>{
+                runtime.state().gpr[4],
+                hooks.state().clock_accum,
+                hooks.state().advance_this_step_ ? 1U : 0U};
+        };
+        assert((run(2U, 0U) ==
+                std::array<std::uint32_t, 3U>{0x80120034U, 1U, 0U}));
+        assert((run(2U, 1U) ==
+                std::array<std::uint32_t, 3U>{0x80120034U, 2U, 1U}));
+        assert((run(1U, 5U) ==
+                std::array<std::uint32_t, 3U>{0x80120034U, 6U, 1U}));
+    }
+
     // The HUD animated-text overlay is a whole-`Update` hold (its `+0x38`
     // pause clamp makes a counter-level hold unsafe): a held update returns
     // through the prologue with `$s0` restored; a counted one models the
@@ -5049,6 +5103,7 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
     constexpr std::uint32_t humanoid_callee = 0x8007C178U;
     constexpr std::uint32_t list = 0x80120000U;
     constexpr std::uint32_t humanoid = 0x80121000U;
+    constexpr std::uint32_t npc = 0x80122000U;
     constexpr std::uint32_t result = 0x80130000U;
     constexpr std::uint32_t stack = 0x801F0000U;
     constexpr std::uint32_t AS_STAND = 1U;
@@ -5185,6 +5240,53 @@ void obstacleCollisionGateServicesContactsThatCannotWait() {
         std::uint32_t context = 0U;
         assert(runtime.read32(humanoid + 0x170U, context));
         assert((context & 8U) != 0U); // fire contact re-issued on held
+    }
+    {
+        // Regression for debug-npc-onfire.stsm: the burning player precedes a
+        // burning NPC in the humanoid list. Refreshing the player's contact
+        // must not return early and starve the later NPC's fire contact.
+        Runtime runtime;
+        RetimeHooks hooks{span};
+        assert(runtime.loadBytes(site, std::as_bytes(std::span{window})));
+        const auto humanoid_marker = marker(2U);
+        assert(runtime.loadBytes(
+            humanoid_callee, std::as_bytes(std::span{humanoid_marker})));
+        assert(runtime.write32(list, humanoid));
+        assert(runtime.write32(humanoid, npc));
+        assert(runtime.write32(npc, 0U));
+        assert(runtime.write32(humanoid + 0x58U, 1U << 6U));
+        assert(runtime.write32(humanoid + 0x164U, AS_HOTFOOT));
+        assert(runtime.write32(humanoid + 0x170U, 0U));
+        assert(runtime.write32(npc + 0x58U, 1U << 6U));
+        assert(runtime.write32(npc + 0x164U, AS_HOTFOOT));
+        assert(runtime.write32(npc + 0x170U, 0U));
+        assert(runtime.write32(result, 0U));
+        hooks.program(2U);
+        hooks.state().advance_this_step_ = false; // held
+        runtime.setRetimeHooks(&hooks);
+        hooks.setActive(true);
+        runtime.reset(site, 0U, stack);
+        runtime.setRegister(8, Runtime::return_sentinel); // $t0
+        runtime.setRegister(16, list);                    // $s0
+        runtime.setRegister(31, Runtime::return_sentinel);
+        for (int executed = 0; executed < 64; ++executed) {
+            if (runtime.atReturnSentinel()) {
+                break;
+            }
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.atReturnSentinel());
+        runtime.settleLoadDelay();
+        std::uint32_t tag = 0U;
+        std::uint32_t player_context = 0U;
+        std::uint32_t npc_context = 0U;
+        assert(runtime.read32(result, tag));
+        assert(runtime.read32(humanoid + 0x170U, player_context));
+        assert(runtime.read32(npc + 0x170U, npc_context));
+        assert(tag == 0U); // fire refreshes do not run the damage collision
+        assert((player_context & 8U) != 0U);
+        assert((npc_context & 8U) != 0U);
     }
 }
 

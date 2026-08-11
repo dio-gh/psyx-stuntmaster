@@ -441,6 +441,12 @@ constexpr std::uint32_t overlay_prologue_limit = 0x80030000U;
 inline constexpr std::array<std::uint32_t, 8U> arrow_bob_window{
     0x8E420074U, 0x00000000U, 0x24420001U, 0xAE420074U,
     0x28420008U, 0x14400002U, 0x2402FFF9U, 0xAE420074U};
+// `TitleScreen::SelfUpdate` in OL2. It publishes the title loop's authored
+// frame decision immediately before calling the shared menu-colour step.
+inline constexpr std::array<std::uint32_t, 12U> title_frame_window{
+    0x27BDFFD8U, 0xAFB00018U, 0x00808021U, 0x26040034U,
+    0xAFBF0024U, 0xAFB20020U, 0x0C017344U, 0xAFB1001CU,
+    0x27B10010U, 0x8E120030U, 0x96020034U, 0x02202021U};
 // `Butch::_Stomp`'s landing-event counter window. This sequence occurs once
 // in BOL and not in any of the three overlays that reuse its load range.
 inline constexpr std::array<std::uint32_t, 12U> butch_stomp_window{
@@ -727,9 +733,12 @@ inline constexpr RetimeCallGate cbv_uv_gate{0x80098BE0U};
 //   bit — the inner collision would also apply the per-authored burn damage
 //   tick on the held update — so the hook re-issues `+0x170:3` directly.
 //
-// For these cases run that humanoid's inner obstacle collision directly on a
-// held update. This is the same call the list wrapper would make, but it does
-// not also sub-step every other humanoid's passenger and ledge state.
+// On a held update, refresh every active Hotfoot bit while scanning the whole
+// list, then run the first other qualifying humanoid's inner obstacle collision
+// directly. Scanning all Hotfoot entries matters because the player commonly
+// precedes burning NPCs. The inner call is the same call the list wrapper would
+// make, but it does not also sub-step every other humanoid's passenger and
+// ledge state.
 // Pushable::Think remains authored-rate gated separately, as before the
 // whole-pass gate landed.
 std::uint32_t obstacleCollisionPassHook(
@@ -759,6 +768,7 @@ std::uint32_t obstacleCollisionPassHook(
         if (!runtime.read32(state.gpr[4], humanoid)) {
             return rejoin;
         }
+        std::uint32_t collision_humanoid = 0U;
         for (std::size_t index = 0U;
              humanoid != 0U && index < max_humanoids;
              ++index) {
@@ -791,17 +801,26 @@ std::uint32_t obstacleCollisionPassHook(
                         static_cast<void>(runtime.write32(
                             humanoid + 0x170U, context | 8U));
                     }
-                    return rejoin;
+                } else if (collision_humanoid == 0U) {
+                    // The inner collision call can be resumed for one
+                    // humanoid through the retail wrapper's return address.
+                    // Keep scanning first so later burning NPCs cannot lose
+                    // their fire contact merely because the player (or
+                    // another humanoid) appeared earlier in the list.
+                    collision_humanoid = humanoid;
                 }
-                hostWriteRegister(state, 4, humanoid); // $a0, inner-call arg
-                hostWriteRegister(state, 31, rejoin);  // $ra, as the wrapper
-                return humanoid_obstacle_collision;
             }
             std::uint32_t next = 0U;
             if (!runtime.read32(humanoid, next) || next == humanoid) {
                 return rejoin;
             }
             humanoid = next;
+        }
+        if (collision_humanoid != 0U) {
+            hostWriteRegister(
+                state, 4, collision_humanoid); // $a0, inner-call arg
+            hostWriteRegister(state, 31, rejoin); // $ra, as the wrapper
+            return humanoid_obstacle_collision;
         }
         return rejoin;
     }
@@ -831,6 +850,22 @@ std::uint32_t menuFrameDecisionHook(
     std::uint32_t rejoin, const void*) noexcept {
     retime.decide();
     hostWriteRegister(state, 16, state.gpr[4]); // $s0 = $a0, displaced move
+    return rejoin;
+}
+
+// The title prompt uses the same `MenuColorNext` gate as pause selectors, but
+// `gsTitleLoopState` calls neither `Step__4Time` nor `MenuDraw`, so without a
+// title-local decider the gate reads a stale phase and can advance every 60 Hz
+// update. `TitleScreen::SelfUpdate` runs once per title update. The hook sits
+// on `addiu $a0,$s0,0x34` immediately before `jal MenuColorNext`; its delay
+// slot saves `$ra`, and the hook models the displaced argument calculation.
+std::uint32_t titleFrameDecisionHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime&,
+    std::uint32_t rejoin, const void*) noexcept {
+    retime.decide();
+    hostWriteRegister(state, 4, state.gpr[16] + 0x34U); // $a0 = $s0 + 0x34
     return rejoin;
 }
 
@@ -1813,6 +1848,13 @@ std::span<const RetimeHook> retimeCounterHooks() noexcept {
 std::span<const RetimeOverlayHook> retimeOverlayHooks() noexcept {
     static const std::vector<RetimeOverlayHook> hooks = [] {
         std::vector<RetimeOverlayHook> out{
+            {{"title_frame_decision",
+              0x80011938U,
+              0x80011940U,
+              RetimeHookKind::semantic,
+              &titleFrameDecisionHook, nullptr},
+             0x8001192CU,
+             title_frame_window},
             {{"butch_stomp_counter",
               0x8001ADD4U,
               0x8001ADDCU,

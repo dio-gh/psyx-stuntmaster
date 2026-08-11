@@ -37,12 +37,14 @@ Shape-1 table, and `_Collapse__4Boss`, Dante's missile/retarget counters,
 `_ButchDMS`, `_ButchDMS_Charge`, `_PaulDMS` (recovery + attack duration),
 the henchman engage delay, and `CounterAttack`'s hit frames are installed
 with fingerprint windows verified unique across all four `*_REL.BIN` files
-(`overlay=46`). Three live-reported interaction bugs are fixed: the fire-pit
+(`overlay=47`, including the title-frame decider). Three live-reported
+interaction bugs are fixed: the fire-pit
 run/burn flicker and doubled burn damage (AS_Hotfoot added to the
 collision-pass held exceptions — `Think__8Humanoid` clears the `+0x170`
 contact word every update, and the hook now re-issues `Untouchable`'s fire
-bit `+0x170:3` directly on held updates instead of running the inner
-collision, so the per-authored damage tick does not double) and the 2x push
+bit `+0x170:3` directly for every burning humanoid on held updates instead of
+running the inner collision, so the per-authored damage tick does not double;
+the whole-list scan fixes NPCs after an already-burning player) and the 2x push
 speed (OL1 `pushable_collision_hold` gates the displacement + engage counter
 in `Pushable::HandleHumanoidCollision`, which the AS_PushObject exception
 runs every update), and the 2x conveyor carry while running (NBOL
@@ -87,8 +89,12 @@ Fix (landed): `menu_colour_pulse`, a call gate at `0x8005CD1C` (callee
 `$s0`/`$ra` prologue saves are unaffected. Every menu colour pulse funnels
 through this one function — the pause menu, the tally prompt pulse, and the
 OL2 front-end menus — so one hook covers all of them. The FE title menus run
-under `gsTitleLoopState`, which is not currently a steady handler, so they
-are already correct at 60 Hz.
+under `gsTitleLoopState`, which is itself a high-frequency steady handler.
+Because title calls neither `Step__4Time` nor `MenuDraw`, PRESS START read a
+stale counted phase and advanced at 60 Hz. The fingerprint-gated
+`title_frame_decision` hook at OL2 `TitleScreen::SelfUpdate` `0x80011938`
+publishes a fresh decision immediately before `MenuColorNext`, models the
+displaced `addiu $a0,$s0,0x34`, and restores the authored 30 Hz pulse cadence.
 
 ### The stale pause decision (second root cause, fixed with the gate)
 

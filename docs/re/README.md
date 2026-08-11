@@ -1346,6 +1346,28 @@ extracted overlay/boot bytes:
   active humanoids and makes that call, so bypassing it services the pusher
   without sub-stepping every other humanoid's passenger and ledge state.
 
+- **Fire contact refresh must scan every humanoid (2026-08-11).**
+  `Untouchable` publishes fire contact bit 3 at `Humanoid+0x170`, while
+  `Think__8Humanoid` clears the context word after every update. On a held
+  retimed update, an `AS_Hotfoot` humanoid therefore needs the bit re-issued
+  without running the full collision and its authored damage tick. The first
+  implementation returned after refreshing the first burning humanoid. In
+  `debug-npc-onfire.stsm` the already-burning player is first, starving a
+  burning NPC later in the list and making it alternate out of Hotfoot. The
+  held hook now scans the complete bounded humanoid list and refreshes every
+  active Hotfoot entry before dispatching any other one-humanoid contact
+  exception. A two-humanoid regression covers the player-before-NPC ordering.
+
+- **The title prompt needs its own frame decision (2026-08-11).**
+  The shared `menu_colour_pulse` gate correctly holds `MenuColorNext`, but
+  `gsTitleLoopState` calls neither the play `Step__4Time` decider nor the pause
+  `MenuDraw` decider. Because title is a high-frequency steady handler, PRESS
+  START consumed the stale counted phase on every 60 Hz update. The OL2
+  fingerprint-gated `title_frame_decision` hook at `0x80011938` runs in
+  `TitleScreen::SelfUpdate` immediately before the colour call and publishes
+  the same master decision once per title update. The 12-word window at
+  `0x8001192C` is distinct from the other three overlay images.
+
 - **Conveyor carry must not inherit the running-contact exception
   (2026-08-11).** `Conveyor::HandleHumanoidCollision` (NBOL
   `0x8001C2CC`) does not publish a per-update contact bit. When humanoid flag
