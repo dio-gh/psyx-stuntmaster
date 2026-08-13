@@ -17,6 +17,7 @@ Preserves the original game logic while adding modern presentation and quality-o
 - **High-resolution PGXP rendering** — renders the original PlayStation graphics through OpenGL at resolutions up to 1440p, with PGXP-enhanced geometry and a resolution independent of the window size.
 - **Instant display switching** — toggle between 30/60 Hz and 4:3/16:9 modes while playing. Display settings can also be changed through an added in-game menu and are remembered between sessions.
 - **Remappable input** — configurable keyboard and SDL gamepad controls with conventional PlayStation-style controller mappings.
+- **Photo mode** — freeze or resume the simulation while flying a free camera through the original retail renderer, with the gameplay HUD hidden automatically.
 - **Quick saves** — save or restore the complete running game with dedicated hotkeys, alongside the original memory-card save system.
 - **Portable launcher and settings** — select the game image and display options from a lightweight launcher; configuration and saves remain beside the executable for easy portability.
 
@@ -81,11 +82,23 @@ Host controls:
 | --- | --- |
 | `Alt+Enter` | Toggle borderless fullscreen |
 | `0` | Toggle diagnostics |
+| `F11` | Toggle photo mode / free camera during gameplay |
+| `P` | Freeze/resume simulation while staying in photo mode |
 | `F5` | Quick Save |
 | `F6` | Write a timestamped quick save |
 | `F7` | Toggle 30Hz/60Hz mode |
 | `F8` | Toggle 4:3/widescreen mode |
 | `F9` | Quick Load |
+
+Photo mode starts with the world simulation frozen. Press `P`, or R3 on a
+controller, to resume/freeze it without leaving the free camera. Move with `W`,
+`A`, `S`, `D`, descend/ascend with `Q`/`E`, look with the mouse, and hold Left
+Shift to move faster. On a controller, press Select to toggle photo mode, move
+with the left stick, look with the right stick, descend with L2, and ascend with
+R2. Guest gameplay input is neutralized until photo mode is disabled. Retail
+HUD drawing stays hidden in either simulation state and returns when photo mode
+ends. Retail automatically resumes and regains camera ownership when a load or
+cutscene begins.
 
 ## Current status
 

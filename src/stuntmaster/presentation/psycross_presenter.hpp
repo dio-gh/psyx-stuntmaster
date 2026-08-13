@@ -1,5 +1,6 @@
 #pragma once
 
+#include "stuntmaster/game/free_camera.hpp"
 #include "stuntmaster/presentation/debug_overlay.hpp"
 #include "stuntmaster/presentation/license_overlay.hpp"
 
@@ -73,6 +74,33 @@ public:
     }
     [[nodiscard]] bool takeWidescreenToggleRequest() noexcept {
         return std::exchange(widescreen_toggle_requested_, false);
+    }
+    [[nodiscard]] bool takeFreeCameraToggleRequest() noexcept {
+        return std::exchange(free_camera_toggle_requested_, false);
+    }
+    [[nodiscard]] bool takePhotoSimulationToggleRequest() noexcept {
+        return std::exchange(photo_simulation_toggle_requested_, false);
+    }
+    [[nodiscard]] game::FreeCameraInput takeFreeCameraInput() noexcept {
+        const game::FreeCameraInput input{
+            free_camera_movement_,
+            free_camera_mouse_x_,
+            free_camera_mouse_y_,
+            free_camera_controller_right_,
+            free_camera_controller_up_,
+            free_camera_controller_forward_,
+            free_camera_controller_look_x_,
+            free_camera_controller_look_y_};
+        free_camera_mouse_x_ = 0;
+        free_camera_mouse_y_ = 0;
+        return input;
+    }
+    // Main-thread acknowledgement of the guest worker's accepted mode. Mouse
+    // capture follows the accepted state rather than the F11 edge, so a toggle
+    // refused during a load or cutscene never traps the cursor.
+    void setFreeCameraActive(bool active) noexcept;
+    void setPhotoModeAvailable(bool available) noexcept {
+        photo_mode_available_ = available;
     }
     void setDebugOverlay(DebugOverlayState state) noexcept;
     [[nodiscard]] std::uint32_t displayRefreshRate() const noexcept {
@@ -232,6 +260,7 @@ private:
     // Consume pad + keyboard navigation while the license viewer is open. The
     // pad word is active-low (a cleared bit means pressed).
     void updateLicenseViewerInput(std::uint16_t pad_buttons);
+    [[nodiscard]] SDL_GameController* ensureGameController() noexcept;
 
     bool has_scanout_{};
     std::uint32_t scanout_width_{};
@@ -270,16 +299,41 @@ private:
     int timestamped_quick_save_key_{};
     int retime_toggle_key_{};
     int widescreen_toggle_key_{};
+    int free_camera_toggle_key_{};
+    int photo_simulation_toggle_key_{};
+    int free_camera_forward_key_{};
+    int free_camera_backward_key_{};
+    int free_camera_left_key_{};
+    int free_camera_right_key_{};
+    int free_camera_up_key_{};
+    int free_camera_down_key_{};
+    int free_camera_fast_key_{};
     bool quick_save_key_down_{};
     bool quick_load_key_down_{};
     bool timestamped_quick_save_key_down_{};
     bool retime_toggle_key_down_{};
     bool widescreen_toggle_key_down_{};
+    bool free_camera_toggle_key_down_{};
+    bool free_camera_controller_select_down_{};
+    bool photo_simulation_toggle_key_down_{};
+    bool photo_simulation_controller_r3_down_{};
     bool quick_save_requested_{};
     bool quick_load_requested_{};
     bool timestamped_quick_save_requested_{};
     bool retime_toggle_requested_{};
     bool widescreen_toggle_requested_{};
+    bool free_camera_toggle_requested_{};
+    bool photo_simulation_toggle_requested_{};
+    bool free_camera_active_{};
+    bool photo_mode_available_{};
+    std::uint8_t free_camera_movement_{};
+    std::int32_t free_camera_mouse_x_{};
+    std::int32_t free_camera_mouse_y_{};
+    std::int16_t free_camera_controller_right_{};
+    std::int16_t free_camera_controller_up_{};
+    std::int16_t free_camera_controller_forward_{};
+    std::int16_t free_camera_controller_look_x_{};
+    std::int16_t free_camera_controller_look_y_{};
     std::string notification_message_;
     std::chrono::steady_clock::time_point notification_expires_{};
     std::uint32_t window_width_{};

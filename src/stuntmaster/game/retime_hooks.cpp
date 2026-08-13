@@ -255,6 +255,80 @@ std::uint32_t callGateHook(
     return gate->callee;
 }
 
+// Photo mode freezes only retail's simulation calls, not its process. The
+// handler pipeline still reaches Camera::Update, DrawEverything, display
+// begin/end, VBlank, GPU callbacks, and audio. Each intercepted instruction is
+// a `jal`; its real delay slot has already executed when this hook runs.
+std::uint32_t photoModeCallGateHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime&,
+    std::uint32_t rejoin,
+    const void* context) noexcept {
+    if (retime.photo_simulation_frozen) {
+        return rejoin;
+    }
+    const auto* gate = static_cast<const RetimeCallGate*>(context);
+    hostWriteRegister(state, 31, rejoin);
+    return gate->callee;
+}
+
+std::uint32_t photoModeHudGateHook(
+    psx::R3000State& state,
+    RetimeState& retime,
+    psx::R3000Runtime&,
+    std::uint32_t rejoin,
+    const void* context) noexcept {
+    if (retime.photo_camera_active) {
+        return rejoin;
+    }
+    const auto* gate = static_cast<const RetimeCallGate*>(context);
+    hostWriteRegister(state, 31, rejoin);
+    return gate->callee;
+}
+
+constexpr RetimeCallGate photo_time_step{0x80044A40U};
+constexpr RetimeCallGate photo_animation_step{0x80057D18U};
+constexpr RetimeCallGate photo_hud_display{0x8003F67CU};
+constexpr RetimeCallGate photo_score_step{0x8004CF84U};
+constexpr RetimeCallGate photo_world_step{0x80055D10U};
+
+// These are call sites rather than function prologues, so the normal epilogues
+// still restore every handler's frame. In aiPrivHandler, skipping MoveThings
+// falls through to the separate Camera::Update call at 0x80054160.
+constexpr std::array<RetimeHook, 5U> photo_mode_hooks{{
+    {"photo_animation_effects_step",
+     0x8002B33CU,
+     0x8002B344U,
+     RetimeHookKind::gate,
+     &photoModeCallGateHook,
+     &photo_animation_step},
+    {"photo_hud_display",
+     0x8003F664U,
+     0x8003F66CU,
+     RetimeHookKind::gate,
+     &photoModeHudGateHook,
+     &photo_hud_display},
+    {"photo_time_step",
+     0x80044938U,
+     0x80044940U,
+     RetimeHookKind::gate,
+     &photoModeCallGateHook,
+     &photo_time_step},
+    {"photo_score_step",
+     0x8004CC44U,
+     0x8004CC4CU,
+     RetimeHookKind::gate,
+     &photoModeCallGateHook,
+     &photo_score_step},
+    {"photo_world_step",
+     0x8005412CU,
+     0x80054134U,
+     RetimeHookKind::gate,
+     &photoModeCallGateHook,
+     &photo_world_step},
+}};
+
 // `FadeUpdate__4Game` (`0x8002C9BC`) is the boot executable's shared private
 // fullscreen fade: it adds the step at `gp+0xD3C` (17) to the grayscale byte at
 // `gp+0xD40` once per render-loop pass, clamping at 255 (verified in Ghidra).
@@ -1786,6 +1860,10 @@ inline constexpr RetimeCallGate platform_bob_gate{0x80023190U};
 
 std::span<const RetimeHook> retimeMotionHooks() noexcept {
     return motion_hooks;
+}
+
+std::span<const RetimeHook> photoModeHooks() noexcept {
+    return photo_mode_hooks;
 }
 
 std::span<const RetimeHook> retimeClockHooks() noexcept {

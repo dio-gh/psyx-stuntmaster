@@ -66,6 +66,22 @@ visibility toggle. `--debug-overlay` selects visible-by-default. The key is
 masked at the PAD bridge even if an input configuration assigns `0` to a guest
 action.
 
+`F11` toggles the experimental photo mode during steady gameplay. It starts
+with the simulation frozen; `P` freezes/resumes simulation without leaving the
+free camera. While photo mode is active, mouse movement controls the view,
+`W`/`A`/`S`/`D` move
+horizontally, `Q` descends, `E` ascends, and Left Shift increases speed. The
+controller Select button also toggles the mode; the left stick moves, the right
+stick looks, L2 descends, and R2 ascends, all proportionally after radial
+deadzones. R3 is the controller freeze/resume control; L3 retains its optional
+frame-trace diagnostic role. Controller Select is consumed as a host control during steady
+gameplay but remains guest-visible in menus; the keyboard Select binding is
+always guest-visible. The guest PAD is neutralized while photo mode is active
+so held inputs cannot queue gameplay actions. The retail HUD is hidden for the
+entire photo-mode session, including while P/R3 lets the simulation run. Loads,
+camera animations, and retail camera-mode changes automatically resume the
+simulation and return ownership to the game.
+
 `F5`, `F6`, and `F9` are always host-only controls in live play. `F5`
 atomically replaces `saves\quick-save.stsm`; `F9` restores that file, or
 reports that it is missing or incompatible. `F6` preserves a separate state

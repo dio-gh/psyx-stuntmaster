@@ -86,6 +86,7 @@ add_library(stuntmaster_core
     src/stuntmaster/core/sha256.cpp
     src/stuntmaster/disc/cue_sheet.cpp
     src/stuntmaster/disc/iso9660.cpp
+    src/stuntmaster/game/free_camera.cpp
     src/stuntmaster/game/retail_hle.cpp
     src/stuntmaster/game/retail_patch.cpp
     src/stuntmaster/game/retime_hooks.cpp

@@ -3,6 +3,7 @@
 #include "stuntmaster/core/error.hpp"
 #include "stuntmaster/core/sha256.hpp"
 #include "stuntmaster/core/state_archive.hpp"
+#include "stuntmaster/game/free_camera.hpp"
 #include "stuntmaster/game/guest_schedule.hpp"
 #include "stuntmaster/game/retail_hle.hpp"
 #include "stuntmaster/game/retail_patch.hpp"
@@ -6381,6 +6382,200 @@ void platformConversionHooksSubStepTheRateSensitiveQuantities() {
     }
 }
 
+void freeCameraUsesRetailPoseAndRestoresItsOwner() {
+    using stuntmaster::game::FreeCameraController;
+    using stuntmaster::game::FreeCameraInput;
+    using stuntmaster::game::FreeCameraResult;
+    using stuntmaster::game::free_camera_fast;
+    using stuntmaster::game::free_camera_forward;
+    using stuntmaster::psx::R3000Runtime;
+
+    constexpr std::uint32_t camera = 0x80110000U;
+    constexpr std::uint32_t follow_path = 0x80048AC0U;
+    R3000Runtime runtime;
+    assert(runtime.write32(0x800DD734U, camera));
+    assert(runtime.write32(camera + 8U, 0x800CCCB8U));
+    assert(runtime.write32(camera + 0x1D4U, 0U));
+    assert(runtime.write16(camera + 0x170U, 4U));
+    assert(runtime.write16(camera + 0x172U, 0xFFFFU));
+    assert(runtime.write32(camera + 0x174U, follow_path));
+    assert(runtime.write32(camera + 0x1D8U, 3U));
+    assert(runtime.write32(camera + 0x12CU, 8'000U));
+    assert(runtime.write32(camera + 0x130U, 10'000U));
+    assert(runtime.write32(camera + 0x134U, 8'000U));
+    assert(runtime.write32(camera + 0x1CU, 100U));
+    assert(runtime.write32(camera + 0x20U, 200U));
+    assert(runtime.write32(camera + 0x24U, 300U));
+    assert(runtime.write32(camera + 0x17CU, 0U));
+    assert(runtime.write32(camera + 0x180U, 0U));
+    assert(runtime.write32(camera + 0x184U, 0U));
+
+    FreeCameraController controller;
+    assert(controller.toggle(runtime, true) == FreeCameraResult::enabled);
+    assert(controller.active());
+    std::uint16_t half = 0U;
+    std::uint32_t word = 0U;
+    assert(runtime.read16(camera + 0x172U, half) && half == 0U);
+    assert(runtime.read32(camera + 0x1D8U, word) && word == 0U);
+
+    FreeCameraInput input{
+        static_cast<std::uint8_t>(free_camera_forward), 0, 0};
+    assert(controller.update(runtime, input, 60U, true) ==
+           FreeCameraResult::unchanged);
+    assert(runtime.read32(camera + 0x24U, word) && word == 250U);
+    assert(runtime.read32(camera + 0x84U, word) && word == 250U);
+    assert(runtime.read32(camera + 0xD4U, word) && word == 250U);
+
+    input = {
+        static_cast<std::uint8_t>(free_camera_forward | free_camera_fast),
+        2,
+        -3};
+    assert(controller.update(runtime, input, 60U, true) ==
+           FreeCameraResult::unchanged);
+    assert(runtime.read32(camera + 0x180U, word) && word == 40U);
+    assert(runtime.read32(camera + 0x17CU, word) && word == 60U);
+
+    // Half-stick movement retains half speed instead of being normalized to
+    // the digital full-speed path.
+    std::uint32_t before_z = 0U;
+    assert(runtime.read32(camera + 0x24U, before_z));
+    input = {};
+    input.controller_forward = 16'384;
+    assert(controller.update(runtime, input, 60U, true) ==
+           FreeCameraResult::unchanged);
+    assert(runtime.read32(camera + 0x24U, word));
+    assert(static_cast<std::int32_t>(before_z) -
+               static_cast<std::int32_t>(word) ==
+           25);
+
+    // Full right-stick look is 180 degrees/second and therefore advances by
+    // the same angular rate independently of the guest VBlank schedule.
+    input = {};
+    input.controller_look_x = 32'767;
+    input.controller_look_y = 16'384;
+    assert(controller.update(runtime, input, 60U, true) ==
+           FreeCameraResult::unchanged);
+    assert(runtime.read32(camera + 0x180U, word) && word == 586U);
+    assert(runtime.read32(camera + 0x17CU, word) &&
+           word == static_cast<std::uint32_t>(-213));
+
+    // A save copy is normalized without disabling the live controller.
+    auto saved = runtime;
+    assert(controller.normalizeSavedRuntime(saved));
+    assert(saved.read16(camera + 0x172U, half) && half == 0xFFFFU);
+    assert(saved.read32(camera + 0x174U, word) && word == follow_path);
+    assert(runtime.read16(camera + 0x172U, half) && half == 0U);
+
+    assert(controller.toggle(runtime, true) == FreeCameraResult::disabled);
+    assert(!controller.active());
+    assert(runtime.read16(camera + 0x170U, half) && half == 4U);
+    assert(runtime.read16(camera + 0x172U, half) && half == 0xFFFFU);
+    assert(runtime.read32(camera + 0x174U, word) && word == follow_path);
+    assert(runtime.read32(camera + 0x1D8U, word) && word == 3U);
+    assert(runtime.read32(camera + 0x130U, word) && word == 10'000U);
+
+    // If retail selects a new mode while freecam is active, that newer state
+    // wins; the stale entry snapshot must not be restored over it.
+    assert(controller.toggle(runtime, true) == FreeCameraResult::enabled);
+    assert(runtime.write16(camera + 0x172U, 0xFFFFU));
+    assert(runtime.write32(camera + 0x174U, 0x8004897CU));
+    assert(controller.update(runtime, {}, 60U, true) ==
+           FreeCameraResult::unavailable);
+    assert(!controller.active());
+    assert(runtime.read32(camera + 0x174U, word) && word == 0x8004897CU);
+
+    // Camera animation bypasses OrderHandler, so the prior handler is restored
+    // for the frame on which the animation eventually ends.
+    assert(runtime.write16(camera + 0x172U, 0xFFFFU));
+    assert(runtime.write32(camera + 0x174U, follow_path));
+    assert(controller.toggle(runtime, true) == FreeCameraResult::enabled);
+    assert(runtime.write32(camera + 0x1D4U, 0x80120000U));
+    assert(controller.update(runtime, {}, 60U, true) ==
+           FreeCameraResult::unavailable);
+    assert(runtime.read16(camera + 0x172U, half) && half == 0xFFFFU);
+    assert(runtime.read32(camera + 0x174U, word) && word == follow_path);
+}
+
+void photoModeGatesSimulationButNotGuestExecution() {
+    using stuntmaster::game::RetimeHooks;
+    using stuntmaster::game::photoModeHooks;
+    using stuntmaster::psx::R3000Runtime;
+
+    struct Site {
+        std::uint32_t pc;
+        std::uint32_t rejoin;
+        std::uint32_t callee;
+        std::uint32_t delay_slot;
+        bool camera_owned_gate;
+    };
+    constexpr std::array sites{
+        Site{0x8002B33CU, 0x8002B344U, 0x80057D18U, 0x00C03821U, false},
+        Site{0x8003F664U, 0x8003F66CU, 0x8003F67CU, 0U, true},
+        Site{0x80044938U, 0x80044940U, 0x80044A40U, 0U, false},
+        Site{0x8004CC44U, 0x8004CC4CU, 0x8004CF84U, 0U, false},
+        Site{0x8005412CU, 0x80054134U, 0x80055D10U, 0U, false},
+    };
+    const auto hooks_span = photoModeHooks();
+    assert(hooks_span.size() == sites.size());
+
+    for (std::size_t index = 0U; index < sites.size(); ++index) {
+        const auto& site = sites[index];
+        assert(hooks_span[index].pc == site.pc);
+        assert(hooks_span[index].rejoin == site.rejoin);
+
+        // Frozen path: the retail delay slot still executes, but the jal is
+        // skipped and $ra remains the handler's caller return address.
+        R3000Runtime frozen;
+        assert(frozen.write32(site.pc + 4U, site.delay_slot));
+        auto frozen_state = frozen.state();
+        frozen_state.pc = site.pc;
+        frozen_state.next_pc = site.pc + 4U;
+        frozen_state.gpr[6] = 0x12345678U;
+        frozen_state.gpr[31] = 0x8000FFF0U;
+        frozen.restoreCpuState(frozen_state);
+        RetimeHooks frozen_hooks{hooks_span};
+        if (site.camera_owned_gate) {
+            frozen_hooks.setPhotoCameraActive(true);
+        } else {
+            frozen_hooks.setPhotoSimulationFrozen(true);
+        }
+        frozen.setRetimeHooks(&frozen_hooks);
+        assert(frozen.step().reason ==
+               stuntmaster::psx::R3000StopReason::running);
+        assert(frozen.step().reason ==
+               stuntmaster::psx::R3000StopReason::running);
+        assert(frozen.state().pc == site.rejoin);
+        assert(frozen.state().gpr[31] == 0x8000FFF0U);
+        if (site.delay_slot != 0U) {
+            assert(frozen.state().gpr[7] == 0x12345678U);
+        }
+
+        // Opposite-owner path: camera ownership must not freeze simulation,
+        // and a simulation freeze must not hide the HUD. The virtual call is
+        // indistinguishable from the retail jal in either case.
+        R3000Runtime running;
+        assert(running.write32(site.pc + 4U, site.delay_slot));
+        auto running_state = running.state();
+        running_state.pc = site.pc;
+        running_state.next_pc = site.pc + 4U;
+        running_state.gpr[31] = 0x8000FFF0U;
+        running.restoreCpuState(running_state);
+        RetimeHooks running_hooks{hooks_span};
+        if (site.camera_owned_gate) {
+            running_hooks.setPhotoSimulationFrozen(true);
+        } else {
+            running_hooks.setPhotoCameraActive(true);
+        }
+        running.setRetimeHooks(&running_hooks);
+        assert(running.step().reason ==
+               stuntmaster::psx::R3000StopReason::running);
+        assert(running.step().reason ==
+               stuntmaster::psx::R3000StopReason::running);
+        assert(running.state().pc == site.callee);
+        assert(running.state().gpr[31] == site.rejoin);
+    }
+}
+
 } // namespace
 
 void licenseOverlayWrapsFoldsAndPaginates() {
@@ -6544,5 +6739,7 @@ int main() {
     butchStompEventCounterUsesTheAuthoredClock();
     authoredCounterHooksKeepTheirCadence();
     platformConversionHooksSubStepTheRateSensitiveQuantities();
+    freeCameraUsesRetailPoseAndRestoresItsOwner();
+    photoModeGatesSimulationButNotGuestExecution();
     std::cout << "stuntmaster_core_tests: passed\n";
 }

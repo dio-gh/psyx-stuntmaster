@@ -395,6 +395,21 @@ inside the PsyCross publication block exists.
   always toggles visibility and is masked from the guest PAD;
   `--debug-overlay` only makes it visible initially. Notifications share this
   final window-space layer, so render resolution cannot scale either one.
+- F11 or controller Select toggles the experimental gameplay-only photo mode.
+  Mouse and WASD/Q/E drive the free camera; Left Shift selects fast movement.
+  Left/right controller sticks move/look, and L2/R2 descend/ascend with analog
+  magnitude. Controller Select is host-only in steady gameplay and remains
+  guest-visible in menus; keyboard Select remains a guest binding. The guest
+  PAD is neutralized while active. Photo mode begins frozen; P or R3 toggles
+  the simulation gates without ending the free camera (L3 remains the optional
+  frame-trace dump). Four host execution gates hold retail time, world/physics,
+  animation/effects, and score calls while `Camera::Update` and drawing keep
+  running. A fifth gate suppresses only retail `DisplayXHUD` for the entire
+  photo-mode session, including while P/R3 runs the simulation; HUD state is
+  left intact. Entry is accepted only in `gsPlayState`; loads, camera
+  animations, and newer retail mode selections resume simulation and end it.
+  Quick-save copies are normalized to the prior retail camera mode with photo
+  hold off.
 - Interpolated polygons must share one previous position at a shared current
   vertex. Moving a matched polygon beside an unmatched one opens a transient
   crack unless that edge motion is propagated to both packets.

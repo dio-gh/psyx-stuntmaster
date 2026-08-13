@@ -1882,6 +1882,56 @@ screen-filling obstruction. The retained-packet adapter now applies the same
 limit before PGXP coordinate conversion. Replaying the captured frame and
 publishing directly from the quick save both show the unobstructed alley.
 
+### Retail Camera has a reversible no-dispatch mode — verified
+
+The boot executable's `Camera` object is published through `theCamera` at
+`0x800DD734`; its vtable is `0x800CCCB8`. `Think__6Camera` (`0x80047F28`)
+reads the embedded `OrderHandler` at `Camera+0x170`: a signed mode index of
+zero skips the mode function but still reaches `Move__6Camera`. The ordinary
+`Update__6Camera` (`0x800482DC`) then builds the `tMatrixCamera` from position
+at `+0x1c` and Euler angles at `+0x17c`.
+
+F11 photo mode uses that existing zero state rather than patching executable
+code or calling the dormant pad-driven `_DebugCam__6Camera` (`0x80048718`). At
+the worker's VBlank boundary it mirrors the host pose into position (`+0x1c`),
+previous position (`+0x7c`), and interpolation target (`+0xcc`), clears the two
+path/look-at flag bits at `+0x1d8`, and writes the angles. Entry fingerprints
+the camera vtable and rejects an active camera animation at `+0x1d4`.
+
+The entry snapshot retains `OrderHandler`, flags, and movement times
+(`+0x12c`). F11 exit or leaving `gsPlayState` restores it. If a camera animation
+or retail `SetMode__6Camera` (`0x80049C44`) takes ownership first, free camera
+drops its state without writing the older snapshot over retail's newer mode.
+Quick-save encoding applies the snapshot only to the copied runtime, keeping
+free camera ephemeral without changing the save format.
+
+The same host input stream accepts controller Select as the toggle, applies a
+radial deadzone to the left/right sticks for proportional move/look, and maps
+L2/R2 magnitude to down/up. Controller Select is removed before the guest PAD
+bridge only while `gsPlayState` makes photo mode available, so it remains a
+guest button in menus; while photo mode is active the whole guest PAD word is
+neutral.
+
+Photo mode enters with the four simulation gates active. P or controller R3
+toggles only those gates, leaving Camera's zero-mode override and host pose
+updates in place; L3 remains reserved for the optional frame-trace dump. A
+separate camera-ownership gate intercepts the `Display__3HUD` call at
+`0x8003F664` inside `DisplayXHUD__3HUDP7Handler` and rejoins at `0x8003F66C`.
+It skips only HUD drawing for the full photo-mode session. HUD update/state
+handlers continue running, so resuming the simulation does not stale them and
+the HUD returns current when photo mode ends.
+
+The frozen simulation is also byte-clean. Four host execution gates intercept
+retail `jal` call sites: `Step__4Time` at `0x80044938`, the animation/effects
+`rDoWithStack` at `0x8002B33C`, `Step__12ScoreManager` at `0x8004CC44`, and
+`MoveThings__2AI` at `0x8005412C`. The last call is deliberately narrower than
+`aiPrivHandler`: after it is skipped, retail still reaches its separate
+`Update__6Camera` call at `0x80054160`; `DrawEverythingHandler` and the world
+display handlers are not gated. Thus the scene, clocks, physics, effects, and
+score are held while camera construction, rendering, VBlank/GPU service, and
+audio keep running. With the relevant photo-mode state off, each virtual gate
+reproduces its displaced `jal`.
+
 ### Gameplay logic lives in the disc overlays — verified
 
 `UpdatePosition__8Pushable` (`0x800184A8`), `UpdatePosition__4Door`, the

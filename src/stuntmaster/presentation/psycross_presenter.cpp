@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -180,6 +181,66 @@ constexpr std::uint16_t decodePsyCrossPadButtons(
 // byte ordering explicitly: a Circle press is DFFF and Right is FFDF.
 static_assert(decodePsyCrossPadButtons(0xFFU, 0xDFU) == 0xDFFFU);
 static_assert(decodePsyCrossPadButtons(0xDFU, 0xFFU) == 0xFFDFU);
+
+[[nodiscard]] int controllerMappingValue(
+    SDL_GameController* controller,
+    int mapping) noexcept {
+    if (controller == nullptr || mapping < 0) {
+        return 0;
+    }
+    if ((mapping & CONTROLLER_MAP_FLAG_AXIS) != 0) {
+        const auto axis = mapping &
+            ~(CONTROLLER_MAP_FLAG_AXIS | CONTROLLER_MAP_FLAG_INVERSE);
+        if (axis < 0 || axis >= SDL_CONTROLLER_AXIS_MAX) {
+            return 0;
+        }
+        auto value = static_cast<int>(SDL_GameControllerGetAxis(
+            controller, static_cast<SDL_GameControllerAxis>(axis)));
+        if ((mapping & CONTROLLER_MAP_FLAG_INVERSE) != 0) {
+            value = -value;
+        }
+        return value;
+    }
+    if (mapping >= SDL_CONTROLLER_BUTTON_MAX) {
+        return 0;
+    }
+    return SDL_GameControllerGetButton(
+               controller, static_cast<SDL_GameControllerButton>(mapping)) != 0
+        ? 32'767
+        : 0;
+}
+
+[[nodiscard]] std::array<std::int16_t, 2U> shapeControllerStick(
+    int raw_x,
+    int raw_y) noexcept {
+    constexpr double axis_max = 32'767.0;
+    constexpr double deadzone = axis_max * 0.18;
+    const auto x = static_cast<double>(raw_x);
+    const auto y = static_cast<double>(raw_y);
+    const auto magnitude = std::hypot(x, y);
+    if (magnitude <= deadzone) {
+        return {};
+    }
+    const auto shaped = std::min(
+        1.0, (magnitude - deadzone) / (axis_max - deadzone));
+    const auto scale = shaped * axis_max / magnitude;
+    return {
+        static_cast<std::int16_t>(std::clamp(
+            std::lround(x * scale), -32'767L, 32'767L)),
+        static_cast<std::int16_t>(std::clamp(
+            std::lround(y * scale), -32'767L, 32'767L)),
+    };
+}
+
+[[nodiscard]] std::int16_t shapeControllerTrigger(int raw) noexcept {
+    constexpr int deadzone = 2'048;
+    raw = std::clamp(raw, 0, 32'767);
+    if (raw <= deadzone) {
+        return 0;
+    }
+    return static_cast<std::int16_t>(
+        (raw - deadzone) * 32'767 / (32'767 - deadzone));
+}
 
 std::int32_t signed11(std::uint32_t value) noexcept {
     value &= 0x7FFU;
@@ -611,6 +672,15 @@ PsyCrossPresenter::PsyCrossPresenter(
     retime_toggle_key_ = PsyX_LookupKeyboardMapping("F7", 0);
     widescreen_toggle_key_ = PsyX_LookupKeyboardMapping("F8", 0);
     license_toggle_key_ = PsyX_LookupKeyboardMapping("L", 0);
+    free_camera_toggle_key_ = PsyX_LookupKeyboardMapping("F11", 0);
+    photo_simulation_toggle_key_ = PsyX_LookupKeyboardMapping("P", 0);
+    free_camera_forward_key_ = PsyX_LookupKeyboardMapping("W", 0);
+    free_camera_backward_key_ = PsyX_LookupKeyboardMapping("S", 0);
+    free_camera_left_key_ = PsyX_LookupKeyboardMapping("A", 0);
+    free_camera_right_key_ = PsyX_LookupKeyboardMapping("D", 0);
+    free_camera_up_key_ = PsyX_LookupKeyboardMapping("Q", 0);
+    free_camera_down_key_ = PsyX_LookupKeyboardMapping("E", 0);
+    free_camera_fast_key_ = PsyX_LookupKeyboardMapping("Left Shift", 0);
     PadInitDirect(pad_one_.data(), pad_two_.data());
     PadStartCom();
     initialized_ = true;
@@ -661,6 +731,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         last_windowed_width_ = static_cast<std::uint32_t>(g_windowWidth);
         last_windowed_height_ = static_cast<std::uint32_t>(g_windowHeight);
     }
+    auto* controller = ensureGameController();
     const auto keyPressed = [](int key) {
         return g_sdlKeyboardState != nullptr && key > 0 &&
             g_sdlKeyboardState[key] != 0U;
@@ -675,6 +746,18 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     const auto retime_toggle_pressed = keyPressed(retime_toggle_key_);
     const auto widescreen_toggle_pressed =
         keyPressed(widescreen_toggle_key_);
+    const auto free_camera_toggle_pressed =
+        keyPressed(free_camera_toggle_key_);
+    const auto photo_simulation_toggle_pressed =
+        keyPressed(photo_simulation_toggle_key_);
+    const auto controller_select_pressed =
+        controllerMappingValue(controller, g_cfg_controllerMapping.gc_select) >
+        16'384;
+    const auto controller_select_consumed = controller_select_pressed &&
+        (photo_mode_available_ || free_camera_active_);
+    const auto controller_r3_pressed =
+        controllerMappingValue(controller, g_cfg_controllerMapping.gc_r3) >
+        16'384;
     quick_save_requested_ = quick_save_requested_ ||
         (quick_save_pressed && !quick_save_key_down_);
     quick_load_requested_ = quick_load_requested_ ||
@@ -687,11 +770,72 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         (retime_toggle_pressed && !retime_toggle_key_down_);
     widescreen_toggle_requested_ = widescreen_toggle_requested_ ||
         (widescreen_toggle_pressed && !widescreen_toggle_key_down_);
+    free_camera_toggle_requested_ = free_camera_toggle_requested_ ||
+        (free_camera_toggle_pressed && !free_camera_toggle_key_down_) ||
+        (controller_select_consumed &&
+         !free_camera_controller_select_down_);
+    photo_simulation_toggle_requested_ =
+        photo_simulation_toggle_requested_ ||
+        (free_camera_active_ &&
+         ((photo_simulation_toggle_pressed &&
+           !photo_simulation_toggle_key_down_) ||
+          (controller_r3_pressed &&
+           !photo_simulation_controller_r3_down_)));
     quick_save_key_down_ = quick_save_pressed;
     quick_load_key_down_ = quick_load_pressed;
     timestamped_quick_save_key_down_ = timestamped_quick_save_pressed;
     retime_toggle_key_down_ = retime_toggle_pressed;
     widescreen_toggle_key_down_ = widescreen_toggle_pressed;
+    free_camera_toggle_key_down_ = free_camera_toggle_pressed;
+    free_camera_controller_select_down_ = controller_select_pressed;
+    photo_simulation_toggle_key_down_ = photo_simulation_toggle_pressed;
+    photo_simulation_controller_r3_down_ = controller_r3_pressed;
+
+    free_camera_movement_ = 0U;
+    const auto addMovement = [&](int key, game::FreeCameraMovement movement) {
+        if (free_camera_active_ && keyPressed(key)) {
+            free_camera_movement_ |= static_cast<std::uint8_t>(movement);
+        }
+    };
+    addMovement(free_camera_forward_key_, game::free_camera_forward);
+    addMovement(free_camera_backward_key_, game::free_camera_backward);
+    addMovement(free_camera_left_key_, game::free_camera_left);
+    addMovement(free_camera_right_key_, game::free_camera_right);
+    addMovement(free_camera_up_key_, game::free_camera_up);
+    addMovement(free_camera_down_key_, game::free_camera_down);
+    addMovement(free_camera_fast_key_, game::free_camera_fast);
+    free_camera_controller_right_ = 0;
+    free_camera_controller_up_ = 0;
+    free_camera_controller_forward_ = 0;
+    free_camera_controller_look_x_ = 0;
+    free_camera_controller_look_y_ = 0;
+    if (free_camera_active_) {
+        int mouse_x = 0;
+        int mouse_y = 0;
+        (void)SDL_GetRelativeMouseState(&mouse_x, &mouse_y);
+        free_camera_mouse_x_ += mouse_x;
+        free_camera_mouse_y_ += mouse_y;
+        const auto move = shapeControllerStick(
+            controllerMappingValue(
+                controller, g_cfg_controllerMapping.gc_axis_left_x),
+            controllerMappingValue(
+                controller, g_cfg_controllerMapping.gc_axis_left_y));
+        const auto look = shapeControllerStick(
+            controllerMappingValue(
+                controller, g_cfg_controllerMapping.gc_axis_right_x),
+            controllerMappingValue(
+                controller, g_cfg_controllerMapping.gc_axis_right_y));
+        const auto ascend = shapeControllerTrigger(controllerMappingValue(
+            controller, g_cfg_controllerMapping.gc_l2));
+        const auto descend = shapeControllerTrigger(controllerMappingValue(
+            controller, g_cfg_controllerMapping.gc_r2));
+        free_camera_controller_right_ = move[0];
+        free_camera_controller_forward_ = static_cast<std::int16_t>(-move[1]);
+        free_camera_controller_up_ = static_cast<std::int16_t>(
+            static_cast<int>(ascend) - static_cast<int>(descend));
+        free_camera_controller_look_x_ = look[0];
+        free_camera_controller_look_y_ = look[1];
+    }
     debug_overlay_visible_ = debug_overlay_toggle_.update(
         debug_overlay_.enabled,
         debug_overlay_visible_,
@@ -716,9 +860,23 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         previous_trace_buttons_ = 0xFFFFU;
         return 0xFFFFU;
     }
+    if (controller_select_consumed) {
+        // Controller Select is photo mode's host toggle. Keyboard Select keeps
+        // its ordinary guest binding, and controller Select remains guest-
+        // visible outside steady gameplay.
+        buttons |= 0x0001U;
+    }
+    if (free_camera_active_ && controller_r3_pressed) {
+        // R3 is host-owned only while photo mode is active. L3 remains the
+        // optional frame-trace dump control.
+        buttons |= 0x0004U;
+    }
     if ((debug_overlay_.enabled && toggle_pressed) || quick_save_pressed ||
         quick_load_pressed || timestamped_quick_save_pressed ||
-        retime_toggle_pressed || widescreen_toggle_pressed) {
+        retime_toggle_pressed || widescreen_toggle_pressed ||
+        free_camera_toggle_pressed ||
+        (free_camera_active_ && photo_simulation_toggle_pressed) ||
+        free_camera_movement_ != 0U) {
         // Host keys never reach the guest PAD, even if a custom input file
         // also maps one of them to a guest-visible button.
         const auto neutralize = [&](int mapping, std::uint16_t mask) {
@@ -730,7 +888,19 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
                  mapping == timestamped_quick_save_key_) ||
                 (retime_toggle_pressed && mapping == retime_toggle_key_) ||
                 (widescreen_toggle_pressed &&
-                 mapping == widescreen_toggle_key_)) {
+                 mapping == widescreen_toggle_key_) ||
+                (free_camera_toggle_pressed &&
+                 mapping == free_camera_toggle_key_) ||
+                (free_camera_active_ && photo_simulation_toggle_pressed &&
+                 mapping == photo_simulation_toggle_key_) ||
+                (free_camera_active_ && keyPressed(mapping) &&
+                 (mapping == free_camera_forward_key_ ||
+                  mapping == free_camera_backward_key_ ||
+                  mapping == free_camera_left_key_ ||
+                  mapping == free_camera_right_key_ ||
+                  mapping == free_camera_up_key_ ||
+                  mapping == free_camera_down_key_ ||
+                  mapping == free_camera_fast_key_))) {
                 buttons |= mask;
             }
         };
@@ -766,6 +936,25 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     return buttons;
 }
 
+void PsyCrossPresenter::setFreeCameraActive(bool active) noexcept {
+    if (free_camera_active_ == active) {
+        return;
+    }
+    free_camera_active_ = active;
+    free_camera_movement_ = 0U;
+    free_camera_mouse_x_ = 0;
+    free_camera_mouse_y_ = 0;
+    free_camera_controller_right_ = 0;
+    free_camera_controller_up_ = 0;
+    free_camera_controller_forward_ = 0;
+    free_camera_controller_look_x_ = 0;
+    free_camera_controller_look_y_ = 0;
+    (void)SDL_SetRelativeMouseMode(active ? SDL_TRUE : SDL_FALSE);
+    int ignored_x = 0;
+    int ignored_y = 0;
+    (void)SDL_GetRelativeMouseState(&ignored_x, &ignored_y);
+}
+
 void PsyCrossPresenter::applyRumble(
     std::uint8_t motor1,
     std::uint8_t motor2,
@@ -778,20 +967,7 @@ void PsyCrossPresenter::applyRumble(
         rumble_active_ = false;
         return;
     }
-    if (rumble_controller_ == nullptr ||
-        !SDL_GameControllerGetAttached(rumble_controller_)) {
-        if (rumble_controller_ != nullptr) {
-            SDL_GameControllerClose(rumble_controller_);
-            rumble_controller_ = nullptr;
-        }
-        for (int index = 0; index < SDL_NumJoysticks(); ++index) {
-            if (SDL_IsGameController(index)) {
-                rumble_controller_ = SDL_GameControllerOpen(index);
-                break;
-            }
-        }
-    }
-    if (rumble_controller_ == nullptr) {
+    if (ensureGameController() == nullptr) {
         rumble_active_ = false;
         return;
     }
@@ -807,6 +983,24 @@ void PsyCrossPresenter::applyRumble(
         static_cast<std::uint16_t>(motor2) * rumble_scale,
         duration_ms);
     rumble_active_ = true;
+}
+
+SDL_GameController* PsyCrossPresenter::ensureGameController() noexcept {
+    if (rumble_controller_ != nullptr &&
+        SDL_GameControllerGetAttached(rumble_controller_)) {
+        return rumble_controller_;
+    }
+    if (rumble_controller_ != nullptr) {
+        SDL_GameControllerClose(rumble_controller_);
+        rumble_controller_ = nullptr;
+    }
+    for (int index = 0; index < SDL_NumJoysticks(); ++index) {
+        if (SDL_IsGameController(index)) {
+            rumble_controller_ = SDL_GameControllerOpen(index);
+            break;
+        }
+    }
+    return rumble_controller_;
 }
 
 void PsyCrossPresenter::setDebugOverlay(DebugOverlayState state) noexcept {

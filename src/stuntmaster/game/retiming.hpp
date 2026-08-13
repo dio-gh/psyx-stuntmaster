@@ -41,6 +41,14 @@ struct RetimeState {
     // authored timelines advance, true means they hold. Every hook reads this
     // instead of deciding for itself.
     bool advance_this_step_{true};
+    // F11 photo mode uses the same byte-clean execution-hook machinery, but
+    // is independent of retiming. Kept in the old struct's tail padding so
+    // the quick-save wire size does not change; saves explicitly normalize it
+    // to false because photo mode is ephemeral host state.
+    bool photo_simulation_frozen{};
+    // Free-camera ownership is separate from the freeze: HUD suppression
+    // remains active while P/R3 lets the simulation run inside photo mode.
+    bool photo_camera_active{};
 
     // Called once per guest update by the master hook (the `Step__4Time`
     // decision). Mirrors the MIPS body exactly: the accumulator restarts at
@@ -65,6 +73,7 @@ struct RetimeState {
         advance_this_step_ = true;
     }
 };
+static_assert(sizeof(RetimeState) == 16U);
 
 // What a hook does to the guest, for tooling and future recompiler planning.
 // `recompute` rewrites live registers and resumes at the rejoin; `gate` skips
@@ -161,9 +170,9 @@ struct RetimeOverlayHook {
     std::span<const std::uint32_t> window{};
 };
 
-// A sorted lookup table of retime hooks plus the `RetimeState` they share.
-// `setActive(true)` is the whole "install": a host boolean, fingerprint-gated
-// at image load, never a guest memory write.
+// A sorted lookup table of host execution hooks plus the `RetimeState` they
+// share. Retiming and photo mode independently activate dispatch; both are
+// host booleans and never write guest executable memory.
 class RetimeHooks {
 public:
     RetimeHooks() = default;
@@ -242,7 +251,23 @@ public:
     }
 
     void setActive(bool active) noexcept { active_ = active; }
-    [[nodiscard]] bool active() const noexcept { return active_; }
+    [[nodiscard]] bool retimingActive() const noexcept { return active_; }
+    void setPhotoSimulationFrozen(bool frozen) noexcept {
+        state_.photo_simulation_frozen = frozen;
+    }
+    [[nodiscard]] bool photoSimulationFrozen() const noexcept {
+        return state_.photo_simulation_frozen;
+    }
+    void setPhotoCameraActive(bool active) noexcept {
+        state_.photo_camera_active = active;
+    }
+    [[nodiscard]] bool photoCameraActive() const noexcept {
+        return state_.photo_camera_active;
+    }
+    [[nodiscard]] bool active() const noexcept {
+        return active_ || state_.photo_simulation_frozen ||
+            state_.photo_camera_active;
+    }
 
     [[nodiscard]] RetimeState& state() noexcept { return state_; }
     [[nodiscard]] const RetimeState& state() const noexcept { return state_; }
@@ -335,6 +360,13 @@ private:
 // bodies, used as the diff gate for the migration. Add gate/semantic hooks as
 // separate spans as they land.
 [[nodiscard]] std::span<const RetimeHook> retimeMotionHooks() noexcept;
+
+// Always-resident F11 photo-mode gates. While its simulation freeze is active
+// they skip retail's clock, world/physics, animation/effects, and score steps.
+// Camera update and world drawing remain in the handler pipeline. A fifth gate
+// suppresses only DisplayXHUD while the free camera owns photo mode, even when
+// P/R3 resumes simulation. Inactive gates reproduce their displaced `jal`s.
+[[nodiscard]] std::span<const RetimeHook> photoModeHooks() noexcept;
 
 // The `--retime-clock` hooks that decide and consume the master hold decision.
 // `retimedGameClock` is the single decider: it calls `RetimeState::decide()`

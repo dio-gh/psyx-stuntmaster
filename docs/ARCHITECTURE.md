@@ -181,6 +181,24 @@ of render resolution. Number-row `0` always toggles visibility on a key-down
 edge and is removed at the PAD bridge; `--debug-overlay` selects only the
 initial state.
 
+F11/controller-Select photo mode is a reversible guest-camera override, not a
+second renderer. The main thread publishes host-only mouse and WASD/Q/E state
+or deadzone-shaped dual-stick and trigger axes; immediately before an owed
+VBlank the guest worker puts retail Camera's `OrderHandler` in its built-in
+no-dispatch state, updates the object's position and Euler fields, and leaves
+`Camera::Move`, `Camera::Update`, culling, fog, and the complete GPU path
+intact. Four byte-clean execution gates skip retail's time, world/physics,
+animation/effects, and score calls while the camera/update/draw handlers keep
+running. P/R3 toggles those gates without releasing the camera override. A
+separate gate skips only `DisplayXHUD` while the override is owned, so HUD state
+continues updating when the simulation runs and is immediately current on
+exit. Guest PAD input remains neutralized in either simulation state. Only `gsPlayState`
+accepts entry. A load, camera animation, or retail mode selection ends the
+override, resumes simulation, and restores the prior handler/flags/timing when
+retail has not already taken newer ownership. Photo mode is ephemeral host
+state: a quick-save runtime copy is normalized back to its prior retail camera
+mode with the hold flag cleared before encoding.
+
 ### PsyCross path
 
 The default path retains GP0 packets, ordered upload-backed VRAM revisions,

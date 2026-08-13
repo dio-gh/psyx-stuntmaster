@@ -16,6 +16,7 @@
 #include "stuntmaster/core/sha256.hpp"
 #include "stuntmaster/core/state_archive.hpp"
 #include "stuntmaster/disc/iso9660.hpp"
+#include "stuntmaster/game/free_camera.hpp"
 #include "stuntmaster/game/guest_schedule.hpp"
 #include "stuntmaster/game/retail_hle.hpp"
 #include "stuntmaster/game/retail_patch.hpp"
@@ -397,42 +398,43 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     retail_hle.setVblankRate(schedule.vblank_rate);
                 };
 
-            // Retiming is host-owned: attach the RetimeHooks table for whatever
-            // `--retime-motion`/`--retime-clock` select. The boot hooks (always
-            // live) are merged once from the selected spans; the overlay subset
-            // is rebuilt each frame by `refreshRetimeHookTable` (an overlay load
-            // can swap which fingerprint matches). Guest RAM stays byte-clean;
-            // only the swap gate and the non-retime patches remain byte patches.
+            // Host execution hooks stay byte-clean. The five always-resident
+            // photo-mode gates share this table with whichever retiming hooks
+            // the launch selected; the overlay subset is rebuilt as levels
+            // load, but no executable guest word is changed.
             stuntmaster::game::RetimeHooks retime_hook_table;
             std::vector<stuntmaster::game::RetimeHook> retime_boot_hooks;
             std::vector<stuntmaster::game::RetimeHook> retime_active_hooks;
+            const auto appendHooks =
+                [&](std::span<const stuntmaster::game::RetimeHook> span) {
+                    retime_boot_hooks.insert(
+                        retime_boot_hooks.end(), span.begin(), span.end());
+                };
+            appendHooks(stuntmaster::game::photoModeHooks());
+            if (options->retime_motion) {
+                appendHooks(stuntmaster::game::retimeMotionHooks());
+            }
+            if (options->retime_clock) {
+                appendHooks(stuntmaster::game::retimeClockHooks());
+                appendHooks(stuntmaster::game::retimeLedgeHooks());
+                appendHooks(stuntmaster::game::retimeObjectHooks());
+                appendHooks(stuntmaster::game::retimeCounterHooks());
+            }
+            std::sort(
+                retime_boot_hooks.begin(), retime_boot_hooks.end(),
+                [](const stuntmaster::game::RetimeHook& a,
+                   const stuntmaster::game::RetimeHook& b) {
+                    return a.pc < b.pc;
+                });
+            retime_active_hooks.resize(
+                retime_boot_hooks.size() +
+                stuntmaster::game::retimeOverlayHooks().size());
+            runtime.setRetimeHooks(&retime_hook_table);
             if (options->retime_motion || options->retime_clock) {
-                const auto append =
-                    [&](std::span<const stuntmaster::game::RetimeHook> span) {
-                        retime_boot_hooks.insert(
-                            retime_boot_hooks.end(), span.begin(), span.end());
-                    };
-                if (options->retime_motion) {
-                    append(stuntmaster::game::retimeMotionHooks());
-                }
-                if (options->retime_clock) {
-                    append(stuntmaster::game::retimeClockHooks());
-                    append(stuntmaster::game::retimeLedgeHooks());
-                    append(stuntmaster::game::retimeObjectHooks());
-                    append(stuntmaster::game::retimeCounterHooks());
-                }
-                std::sort(
-                    retime_boot_hooks.begin(), retime_boot_hooks.end(),
-                    [](const stuntmaster::game::RetimeHook& a,
-                       const stuntmaster::game::RetimeHook& b) {
-                        return a.pc < b.pc;
-                    });
-                retime_active_hooks.resize(
-                    retime_boot_hooks.size() +
-                    stuntmaster::game::retimeOverlayHooks().size());
-                runtime.setRetimeHooks(&retime_hook_table);
                 std::cerr << "retime_hooks=on boot=" << std::dec
-                          << retime_boot_hooks.size() << " overlay="
+                          << (retime_boot_hooks.size() -
+                              stuntmaster::game::photoModeHooks().size())
+                          << " overlay="
                           << stuntmaster::game::retimeOverlayHooks().size()
                           << '\n';
             }
@@ -441,9 +443,6 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             // plus the overlay hooks whose fingerprint currently matches. Only
             // the overlay subset changes (an overlay load/unload).
             const auto refreshRetimeHookTable = [&] {
-                if (!retime_hook_table.active()) {
-                    return;
-                }
                 const auto overlay = options->retime_clock
                     ? stuntmaster::game::retimeOverlayHooks()
                     : std::span<const stuntmaster::game::RetimeOverlayHook>{};
@@ -457,16 +456,24 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 // line per frame.
                 if (count != retime_hooks_live) {
                     retime_hooks_live = static_cast<std::uint32_t>(count);
-                    std::cerr << "retime_hooks_live=" << std::dec << count
-                              << " of "
-                              << (retime_boot_hooks.size() +
-                                  (options->retime_clock
-                                       ? stuntmaster::game::retimeOverlayHooks()
-                                             .size()
-                                       : 0U))
-                              << '\n';
+                    if (options->retime_motion || options->retime_clock) {
+                        std::cerr << "retime_hooks_live=" << std::dec
+                                  << (count -
+                                      stuntmaster::game::photoModeHooks().size())
+                                  << " of "
+                                  << (retime_boot_hooks.size() -
+                                      stuntmaster::game::photoModeHooks().size() +
+                                      (options->retime_clock
+                                           ? stuntmaster::game::
+                                                 retimeOverlayHooks().size()
+                                           : 0U))
+                                  << '\n';
+                    }
                 }
             };
+            // Populate the table before either independent owner (high-rate
+            // retiming or F11 photo mode) activates dispatch.
+            refreshRetimeHookTable();
             const auto setHighFrequencyMode = [&](bool enable) {
                 const auto& gate = stuntmaster::game::thirtyHertzSwapGate();
                 auto applied = true;
@@ -486,6 +493,9 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     }
                 } else {
                     retime_hook_table.setActive(false);
+                    // Photo mode may keep the shared table dispatching after
+                    // retiming turns off; divisor one is the exact retail path.
+                    retime_hook_table.program(1U);
                     applied =
                         stuntmaster::game::revertRetailPatch(runtime, gate);
                 }
@@ -1069,6 +1079,20 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             std::atomic<std::uint8_t> quick_save_requests{};
             std::atomic<bool> retime_toggle_requested{};
             std::atomic<bool> widescreen_toggle_requested{};
+            std::atomic<bool> free_camera_toggle_requested{};
+            std::atomic<bool> photo_simulation_toggle_requested{};
+            std::atomic<std::uint8_t> free_camera_movement{};
+            std::atomic<std::int32_t> free_camera_mouse_x{};
+            std::atomic<std::int32_t> free_camera_mouse_y{};
+            std::atomic<std::int16_t> free_camera_controller_right{};
+            std::atomic<std::int16_t> free_camera_controller_up{};
+            std::atomic<std::int16_t> free_camera_controller_forward{};
+            std::atomic<std::int16_t> free_camera_controller_look_x{};
+            std::atomic<std::int16_t> free_camera_controller_look_y{};
+            std::atomic<bool> published_free_camera_active{};
+            std::atomic<bool> published_photo_mode_available{};
+            stuntmaster::game::FreeCameraController free_camera;
+            bool photo_simulation_frozen{};
             std::atomic<std::uint32_t> host_menu_update_rate_requested{};
             // The in-game "LEGAL" row opens the host license viewer, which the
             // main thread owns; the worker only raises this request.
@@ -1119,6 +1143,11 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 widescreen_mode,
                 narrow_cull_mode,
                 widescreen_toggle_unavailable,
+                free_camera_mode,
+                free_camera_off,
+                free_camera_unavailable,
+                photo_simulation_frozen,
+                photo_simulation_running,
             };
             std::atomic<QuickSaveNotification> quick_save_notification{
                 QuickSaveNotification::none};
@@ -1268,7 +1297,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     .cd_load_tail_active = cd_load_tail_active,
                     .pending_gpu_display_flip = pending_gpu_display_flip,
                     .pending_vblank_boundary = pending_vblank_boundary,
-                    .retime_active = retime_hook_table.active(),
+                    .retime_active = retime_hook_table.retimingActive(),
                 };
             };
 
@@ -1565,7 +1594,13 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             };
 
             const auto saveQuickSave = [&](const std::filesystem::path& path) {
-                const auto saved = makeMachineQuickSave();
+                auto saved = makeMachineQuickSave();
+                if (!free_camera.normalizeSavedRuntime(saved.runtime)) {
+                    throw stuntmaster::core::Error{
+                        "unable to normalize free camera state"};
+                }
+                saved.retime_state.photo_simulation_frozen = false;
+                saved.retime_state.photo_camera_active = false;
                 const auto payload = encodeQuickSave(saved);
                 writeQuickSaveFile(
                     path,
@@ -1624,6 +1659,14 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 published_requested_update_rate.store(
                     high_frequency_schedule.update_rate,
                     std::memory_order_release);
+                free_camera.abandon();
+                photo_simulation_frozen = false;
+                published_free_camera_active.store(
+                    false, std::memory_order_release);
+                published_photo_mode_available.store(
+                    false, std::memory_order_release);
+                loaded.retime_state.photo_simulation_frozen = false;
+                loaded.retime_state.photo_camera_active = false;
                 applyMachineQuickSave(loaded);
                 if (options->experimental_host_menu) {
                     retail_hle.setHostMenuUpdateRate(
@@ -1655,6 +1698,85 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             // boundary: the caller must restart its loop so the restored
             // scheduler does not receive an extra VBlank.
             const auto serviceQuickSaveRequests = [&]() {
+                const auto state_handler = readRetailGameStateHandler();
+                const auto in_gameplay = state_handler.has_value() &&
+                    *state_handler == 0x80029C6CU; // gsPlayState
+                published_photo_mode_available.store(
+                    in_gameplay, std::memory_order_release);
+                stuntmaster::game::FreeCameraResult free_camera_result =
+                    stuntmaster::game::FreeCameraResult::unchanged;
+                if (free_camera_toggle_requested.exchange(
+                        false, std::memory_order_acq_rel)) {
+                    free_camera_result = free_camera.toggle(
+                        runtime, in_gameplay);
+                }
+                const stuntmaster::game::FreeCameraInput free_camera_input{
+                    free_camera_movement.load(std::memory_order_acquire),
+                    free_camera_mouse_x.exchange(
+                        0, std::memory_order_acq_rel),
+                    free_camera_mouse_y.exchange(
+                        0, std::memory_order_acq_rel),
+                    free_camera_controller_right.load(
+                        std::memory_order_acquire),
+                    free_camera_controller_up.load(
+                        std::memory_order_acquire),
+                    free_camera_controller_forward.load(
+                        std::memory_order_acquire),
+                    free_camera_controller_look_x.load(
+                        std::memory_order_acquire),
+                    free_camera_controller_look_y.load(
+                        std::memory_order_acquire)};
+                const auto update_result = free_camera.update(
+                    runtime,
+                    free_camera_input,
+                    high_frequency_active
+                        ? high_frequency_schedule.vblank_rate
+                        : retail_schedule.vblank_rate,
+                    in_gameplay);
+                if (update_result !=
+                    stuntmaster::game::FreeCameraResult::unchanged) {
+                    free_camera_result = update_result;
+                }
+                if (free_camera_result ==
+                    stuntmaster::game::FreeCameraResult::enabled) {
+                    photo_simulation_frozen = true;
+                } else if (!free_camera.active()) {
+                    photo_simulation_frozen = false;
+                }
+                if (photo_simulation_toggle_requested.exchange(
+                        false, std::memory_order_acq_rel) &&
+                    free_camera.active()) {
+                    photo_simulation_frozen = !photo_simulation_frozen;
+                    quick_save_notification.store(
+                        photo_simulation_frozen
+                            ? QuickSaveNotification::photo_simulation_frozen
+                            : QuickSaveNotification::photo_simulation_running,
+                        std::memory_order_release);
+                }
+                retime_hook_table.setPhotoSimulationFrozen(
+                    free_camera.active() && photo_simulation_frozen);
+                retime_hook_table.setPhotoCameraActive(free_camera.active());
+                published_free_camera_active.store(
+                    free_camera.active(), std::memory_order_release);
+                switch (free_camera_result) {
+                case stuntmaster::game::FreeCameraResult::enabled:
+                    quick_save_notification.store(
+                        QuickSaveNotification::free_camera_mode,
+                        std::memory_order_release);
+                    break;
+                case stuntmaster::game::FreeCameraResult::disabled:
+                    quick_save_notification.store(
+                        QuickSaveNotification::free_camera_off,
+                        std::memory_order_release);
+                    break;
+                case stuntmaster::game::FreeCameraResult::unavailable:
+                    quick_save_notification.store(
+                        QuickSaveNotification::free_camera_unavailable,
+                        std::memory_order_release);
+                    break;
+                case stuntmaster::game::FreeCameraResult::unchanged:
+                    break;
+                }
                 const auto requested_host_menu_rate =
                     host_menu_update_rate_requested.exchange(
                         0U, std::memory_order_acq_rel);
@@ -2220,13 +2342,18 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                                 reportLedgeWatch();
                                 renderable_gpu_frame.retime_hooks_armed =
                                     static_cast<std::uint32_t>(
-                                        retime_boot_hooks.size() +
+                                        retime_boot_hooks.size() -
+                                        stuntmaster::game::photoModeHooks()
+                                            .size() +
                                         (options->retime_clock
                                              ? stuntmaster::game::
                                                    retimeOverlayHooks().size()
                                              : 0U));
                                 renderable_gpu_frame.retime_hooks_live =
-                                    retime_hooks_live;
+                                    retime_hooks_live -
+                                    static_cast<std::uint32_t>(
+                                        stuntmaster::game::photoModeHooks()
+                                            .size());
                                 if (options->motion_trace) {
                                     motion_watch.refresh(runtime);
                                     motion_watch.sample(
@@ -3103,6 +3230,25 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         live_presenter->showNotification(
                             "F8 NEEDS WIDESCREEN PSYCROSS");
                         break;
+                    case QuickSaveNotification::free_camera_mode:
+                        live_presenter->showNotification(
+                            "PHOTO MODE: SIMULATION FROZEN");
+                        break;
+                    case QuickSaveNotification::free_camera_off:
+                        live_presenter->showNotification("PHOTO MODE OFF");
+                        break;
+                    case QuickSaveNotification::free_camera_unavailable:
+                        live_presenter->showNotification(
+                            "PHOTO MODE UNAVAILABLE");
+                        break;
+                    case QuickSaveNotification::photo_simulation_frozen:
+                        live_presenter->showNotification(
+                            "PHOTO SIMULATION FROZEN");
+                        break;
+                    case QuickSaveNotification::photo_simulation_running:
+                        live_presenter->showNotification(
+                            "PHOTO SIMULATION RUNNING");
+                        break;
                     case QuickSaveNotification::none:
                         break;
                     }
@@ -3348,8 +3494,40 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         movie_requests.complete();
                     }
                     if (now >= next_host_input) {
+                        live_presenter->setFreeCameraActive(
+                            published_free_camera_active.load(
+                                std::memory_order_acquire));
+                        live_presenter->setPhotoModeAvailable(
+                            published_photo_mode_available.load(
+                                std::memory_order_acquire));
                         const auto physical_buttons =
                             live_presenter->pollPadOneButtons();
+                        const auto camera_input =
+                            live_presenter->takeFreeCameraInput();
+                        free_camera_movement.store(
+                            camera_input.movement,
+                            std::memory_order_release);
+                        free_camera_mouse_x.fetch_add(
+                            camera_input.mouse_x,
+                            std::memory_order_release);
+                        free_camera_mouse_y.fetch_add(
+                            camera_input.mouse_y,
+                            std::memory_order_release);
+                        free_camera_controller_right.store(
+                            camera_input.controller_right,
+                            std::memory_order_release);
+                        free_camera_controller_up.store(
+                            camera_input.controller_up,
+                            std::memory_order_release);
+                        free_camera_controller_forward.store(
+                            camera_input.controller_forward,
+                            std::memory_order_release);
+                        free_camera_controller_look_x.store(
+                            camera_input.controller_look_x,
+                            std::memory_order_release);
+                        free_camera_controller_look_y.store(
+                            camera_input.controller_look_y,
+                            std::memory_order_release);
                         if (live_presenter->takeQuickSaveRequest()) {
                             quick_save_requests.fetch_or(
                                 quick_save_requested,
@@ -3371,6 +3549,15 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         }
                         if (live_presenter->takeWidescreenToggleRequest()) {
                             widescreen_toggle_requested.store(
+                                true, std::memory_order_release);
+                        }
+                        if (live_presenter->takeFreeCameraToggleRequest()) {
+                            free_camera_toggle_requested.store(
+                                true, std::memory_order_release);
+                        }
+                        if (live_presenter->
+                                takePhotoSimulationToggleRequest()) {
+                            photo_simulation_toggle_requested.store(
                                 true, std::memory_order_release);
                         }
                         // Apply the guest's shake on the SDL-owning thread.
@@ -3395,7 +3582,10 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                             suppress_movie_start = false;
                         }
                         const auto pad_one_buttons =
-                            suppress_movie_start
+                            published_free_camera_active.load(
+                                std::memory_order_acquire)
+                            ? std::uint16_t{0xFFFFU}
+                            : suppress_movie_start
                             ? static_cast<std::uint16_t>(
                                   physical_buttons |
                                   stuntmaster::presentation::
