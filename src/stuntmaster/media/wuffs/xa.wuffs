@@ -1,0 +1,279 @@
+// SPDX-License-Identifier: MIT
+//
+// Decoder for the exact CD-XA ADPCM subset used by the supported retail disc:
+// stereo, four-bit samples, at either 18.9 kHz or 37.8 kHz. The caller passes
+// the 2304-byte MODE2 Form 2 user-data payload, not the surrounding raw sector.
+//
+// Signed PCM values are represented internally as unsigned values biased by
+// 32768. This keeps all arithmetic explicit in Wuffs' unsigned integer model.
+
+pub const XA_PAYLOAD_BYTES            : base.u32 = 2304
+pub const XA_STEREO_FRAMES_PER_SECTOR : base.u32 = 2016
+pub const XA_OUTPUT_BYTES             : base.u32 = 8064
+
+pub status "#bad XA coding info"
+pub status "#bad XA parameter"
+pub status "#inconsistent XA parameter copies"
+pub status "#short XA input"
+pub status "#short XA output"
+
+pub struct xa_decoder?(
+	initialized : base.bool,
+	left_old    : base.u32[..= 0xFFFF],
+	left_older  : base.u32[..= 0xFFFF],
+	right_old   : base.u32[..= 0xFFFF],
+	right_older : base.u32[..= 0xFFFF],
+)
+
+pub func xa_decoder.reset_history!() {
+	this.initialized = true
+	this.left_old = 0x8000
+	this.left_older = 0x8000
+	this.right_old = 0x8000
+	this.right_older = 0x8000
+}
+
+pub func xa_decoder.sample_rate(coding_info: base.u8) base.u32 {
+	if args.coding_info == 0x01 {
+		return 37800
+	} else if args.coding_info == 0x05 {
+		return 18900
+	}
+	return 0
+}
+
+// decode_sector writes exactly XA_OUTPUT_BYTES bytes of little-endian,
+// interleaved stereo S16 PCM. Predictor history is continuous across calls.
+pub func xa_decoder.decode_sector!(
+	dst: slice base.u8,
+	src: slice base.u8,
+	coding_info: base.u8) base.status {
+	var group           : base.u32[..= 18]
+	var block           : base.u32[..= 4]
+	var j               : base.u32[..= 28]
+	var group_base      : base.u32[..= 2176]
+	var parameter_index : base.u32[..= 2186]
+	var data_base       : base.u32[..= 2195]
+	var data_index      : base.u32[..= 2303]
+	var output_index    : base.u32[..= 8064]
+	var left_parameter  : base.u8
+	var right_parameter : base.u8
+	var left_range      : base.u32[..= 12]
+	var right_range     : base.u32[..= 12]
+	var left_filter     : base.u32[..= 3]
+	var right_filter    : base.u32[..= 3]
+	var packed          : base.u8
+	var left_sample     : base.u32[..= 0xFFFF]
+	var right_sample    : base.u32[..= 0xFFFF]
+	var left_bits       : base.u32[..= 0xFFFF]
+	var right_bits      : base.u32[..= 0xFFFF]
+
+	if args.src.length() < 2304 {
+		return "#short XA input"
+	} else if args.dst.length() < 8064 {
+		return "#short XA output"
+	} else if (args.coding_info <> 0x01) and (args.coding_info <> 0x05) {
+		return "#bad XA coding info"
+	}
+	// Validate the complete sector before changing predictor history or output.
+	// A corrupt late sound group must not partially consume decoder state.
+	while group < 18 {
+		assert group <= 17
+		if args.src.length() < 2304 {
+			return "#short XA input"
+		}
+		group_base = group * 128
+		assert group_base <= 2176
+		if (args.src[group_base + 0] <> args.src[group_base + 4]) or
+			(args.src[group_base + 1] <> args.src[group_base + 5]) or
+			(args.src[group_base + 2] <> args.src[group_base + 6]) or
+			(args.src[group_base + 3] <> args.src[group_base + 7]) or
+			(args.src[group_base + 8] <> args.src[group_base + 12]) or
+			(args.src[group_base + 9] <> args.src[group_base + 13]) or
+			(args.src[group_base + 10] <> args.src[group_base + 14]) or
+			(args.src[group_base + 11] <> args.src[group_base + 15]) {
+			return "#inconsistent XA parameter copies"
+		}
+		block = 0
+		while block < 4 {
+			assert block <= 3
+			if args.src.length() < 2304 {
+				return "#short XA input"
+			}
+			parameter_index = group_base + 4 + (block * 2)
+			left_parameter = args.src[parameter_index]
+			right_parameter = args.src[parameter_index + 1]
+			if ((left_parameter & 0x0F) > 12) or
+				((right_parameter & 0x0F) > 12) or
+				((left_parameter >> 4) > 3) or
+				((right_parameter >> 4) > 3) {
+				return "#bad XA parameter"
+			}
+			block = (block + 1) % 5
+		} endwhile
+		group = (group + 1) % 19
+	} endwhile
+	group = 0
+	if not this.initialized {
+		this.reset_history!()
+	}
+	while group < 18 {
+		assert group <= 17
+		if args.src.length() < 2304 {
+			return "#short XA input"
+		} else if args.dst.length() < 8064 {
+			return "#short XA output"
+		}
+		group_base = group * 128
+		assert group_base <= 2176
+		block = 0
+		while block < 4 {
+			assert block <= 3
+			assert group_base <= 2176
+			if args.src.length() < 2304 {
+				return "#short XA input"
+			}
+			parameter_index = group_base + 4 + (block * 2)
+			left_parameter = args.src[parameter_index]
+			right_parameter = args.src[parameter_index + 1]
+			// Re-state the prevalidated bounds so Wuffs can prove the
+			// narrowed range and filter types in this second pass.
+			if ((left_parameter & 0x0F) > 12) or
+				((right_parameter & 0x0F) > 12) or
+				((left_parameter >> 4) > 3) or
+				((right_parameter >> 4) > 3) {
+				return "#bad XA parameter"
+			}
+			left_range = (left_parameter & 0x0F) as base.u32
+			right_range = (right_parameter & 0x0F) as base.u32
+			left_filter = (left_parameter >> 4) as base.u32
+			right_filter = (right_parameter >> 4) as base.u32
+
+			data_base = group_base + 16 + block
+			j = 0
+			while j < 28 {
+				assert j <= 27
+				if args.src.length() < 2304 {
+					return "#short XA input"
+				} else if args.dst.length() < 8064 {
+					return "#short XA output"
+				}
+				data_index = data_base + (j * 4)
+				packed = args.src[data_index]
+				left_sample = this.decode_nibble!(
+					nibble: (packed & 0x0F) as base.u32,
+					range: left_range,
+					filter: left_filter,
+					channel: 0)
+				right_sample = this.decode_nibble!(
+					nibble: (packed >> 4) as base.u32,
+					range: right_range,
+					filter: right_filter,
+					channel: 1)
+
+				// Convert biased signed values to their 16-bit two's-complement
+				// bit pattern and store interleaved little-endian L, R.
+				if left_sample < 0x8000 {
+					left_bits = left_sample + 0x8000
+				} else {
+					left_bits = left_sample - 0x8000
+				}
+				if right_sample < 0x8000 {
+					right_bits = right_sample + 0x8000
+				} else {
+					right_bits = right_sample - 0x8000
+				}
+				if output_index > 8060 {
+					return "#short XA output"
+				}
+				args.dst[output_index + 0] = (left_bits & 0xFF) as base.u8
+				args.dst[output_index + 1] = (left_bits >> 8) as base.u8
+				args.dst[output_index + 2] = (right_bits & 0xFF) as base.u8
+				args.dst[output_index + 3] = (right_bits >> 8) as base.u8
+				output_index += 4
+				j += 1
+			} endwhile
+			block = (block + 1) % 5
+		} endwhile
+		group = (group + 1) % 19
+	} endwhile
+	return ok
+}
+
+// Returns one decoded PCM sample biased by 32768. f1 is stored as its
+// magnitude because Wuffs deliberately has no signed integer types.
+pri func xa_decoder.decode_nibble!(
+	nibble: base.u32[..= 15],
+	range: base.u32[..= 12],
+	filter: base.u32[..= 3],
+	channel: base.u32[..= 1]) base.u32[..= 0xFFFF] {
+	var old                : base.u32[..= 0xFFFF]
+	var older              : base.u32[..= 0xFFFF]
+	var f0                 : base.u32[..= 115]
+	var f1_magnitude       : base.u32[..= 55]
+	var predictor_biased   : base.u32[..= 11_141152]
+	var predictor_bias     : base.u32[..= 5_570560]
+	var predictor_positive : base.u32[..= 174080]
+	var predictor_negative : base.u32[..= 174080]
+	var residual_positive  : base.u32[..= 28672]
+	var residual_negative  : base.u32[..= 32768]
+	var positive           : base.u32[..= 235520]
+	var negative           : base.u32[..= 206848]
+	var sample             : base.u32[..= 0xFFFF]
+
+	if args.channel == 0 {
+		old = this.left_old
+		older = this.left_older
+	} else {
+		old = this.right_old
+		older = this.right_older
+	}
+	if args.filter == 1 {
+		f0 = 60
+	} else if args.filter == 2 {
+		f0 = 115
+		f1_magnitude = 52
+	} else if args.filter == 3 {
+		f0 = 98
+		f1_magnitude = 55
+	}
+
+	// N = signed(old)*f0 - signed(older)*abs(f1) + 32. Encode N
+	// with a filter-dependent bias, then reproduce an arithmetic >> 6.
+	predictor_biased = (old * f0) + ((0x1_0000 - older) * f1_magnitude) + 32
+	predictor_bias = 0x8000 * (f0 + f1_magnitude)
+	if predictor_biased >= predictor_bias {
+		predictor_positive = (predictor_biased ~sat- predictor_bias) >> 6
+	} else {
+		// ceil(delta / 64) is the magnitude of floor(-delta / 64).
+		predictor_negative = ((predictor_bias ~sat- predictor_biased) + 63) >> 6
+	}
+
+	if args.nibble < 8 {
+		residual_positive = args.nibble << (12 - args.range)
+	} else {
+		residual_negative = (16 - args.nibble) << (12 - args.range)
+	}
+	positive = 0x8000 + residual_positive + predictor_positive
+	negative = residual_negative + predictor_negative
+	if positive >= negative {
+		if (positive ~sat- negative) > 0xFFFF {
+			sample = 0xFFFF
+		} else {
+			sample = positive ~sat- negative
+		}
+	} else if (negative ~sat- positive) >= 0x8000 {
+		sample = 0
+	} else {
+		sample = 0x8000 ~sat- (negative ~sat- positive)
+	}
+
+	if args.channel == 0 {
+		this.left_older = this.left_old
+		this.left_old = sample
+	} else {
+		this.right_older = this.right_old
+		this.right_old = sample
+	}
+	return sample
+}

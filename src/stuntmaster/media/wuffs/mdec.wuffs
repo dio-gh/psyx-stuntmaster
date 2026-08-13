@@ -1,0 +1,789 @@
+// SPDX-License-Identifier: MIT
+//
+// Narrow PlayStation MDEC / BS version 2 video decoder. This deliberately
+// accepts only the 320x240, intra-only stream profile shipped on the supported
+// SLUS-00684 disc. The caller assembles one STR video frame (including its
+// eight-byte BS header) before calling decode_frame.
+
+pub status "#bad MDEC header"
+pub status "#bad MDEC Huffman code"
+pub status "#bad MDEC run level"
+pub status "#bad MDEC framing"
+pub status "#truncated MDEC input"
+pub status "#wrong MDEC output size"
+
+pub const MDEC_WIDTH : base.u32 = 320
+pub const MDEC_HEIGHT : base.u32 = 240
+pub const MDEC_RGBA_SIZE : base.u32 = 320 * 240 * 4
+
+// ISO/IEC 11172-2 intra quantizer matrix, with the first coefficient changed
+// from 8 to 2 by Sony's BS encoder. Stored in natural (raster) order.
+pri const MDEC_QUANT : array[64] base.u8[..= 83] = [
+	2, 16, 19, 22, 26, 27, 29, 34,
+	16, 16, 22, 24, 27, 29, 34, 37,
+	19, 22, 26, 27, 29, 34, 34, 38,
+	22, 22, 26, 27, 29, 34, 37, 40,
+	22, 26, 27, 29, 32, 35, 40, 48,
+	26, 27, 29, 32, 35, 40, 48, 58,
+	26, 27, 29, 34, 38, 46, 56, 69,
+	27, 29, 35, 38, 46, 56, 69, 83,
+]
+
+// MPEG/JPEG zig-zag sequence index to natural (raster) index.
+pri const MDEC_ZIGZAG : array[64] base.u8[..= 63] = [
+	0, 1, 8, 16, 9, 2, 3, 10,
+	17, 24, 32, 25, 18, 11, 4, 5,
+	12, 19, 26, 33, 40, 48, 41, 34,
+	27, 20, 13, 6, 7, 14, 21, 28,
+	35, 42, 49, 56, 57, 50, 43, 36,
+	29, 22, 15, 23, 30, 37, 44, 51,
+	58, 59, 52, 45, 38, 31, 39, 46,
+	53, 60, 61, 54, 47, 55, 62, 63,
+]
+
+// FFmpeg's SIMPLE-family integer IDCT weights, scaled by 16384 in the
+// convention where DC has weight 1 and AC weights include sqrt(2).
+pri const MDEC_W1 : base.i64 = 22725
+pri const MDEC_W2 : base.i64 = 21407
+pri const MDEC_W3 : base.i64 = 19266
+pri const MDEC_W4 : base.i64 = 16383
+pri const MDEC_W5 : base.i64 = 12873
+pri const MDEC_W6 : base.i64 = 8867
+pri const MDEC_W7 : base.i64 = 4520
+
+// Run/level values for the eight indexed leaves beneath 00100xxxs.
+pri const MDEC_VLC_00100 : array[8] base.u16 = [
+	0x3401, 0x0006, 0x3001, 0x2C01, 0x0C02, 0x0403, 0x0005, 0x2801,
+]
+
+pri const MDEC_VLC_0001 : array[4] base.u16 = [
+	0x1C01, 0x1801, 0x0402, 0x1401,
+]
+
+pri const MDEC_VLC_00001 : array[4] base.u16 = [
+	0x0802, 0x2401, 0x0004, 0x2001,
+]
+
+pri const MDEC_VLC_0000001 : array[8] base.u16 = [
+	0x4001, 0x1402, 0x0007, 0x0803, 0x0404, 0x3C01, 0x3801, 0x1002,
+]
+
+pri const MDEC_VLC_00000001 : array[16] base.u16 = [
+	0x000B, 0x2002, 0x1003, 0x000A, 0x0804, 0x1C02, 0x5401, 0x5001,
+	0x0009, 0x4C01, 0x4801, 0x0405, 0x0C03, 0x0008, 0x1802, 0x4401,
+]
+
+pri const MDEC_VLC_000000001 : array[32] base.u16 = [
+	0x2802, 0x2402, 0x1403, 0x0C04, 0x0805, 0x0407, 0x0406, 0x000F,
+	0x000E, 0x000D, 0x000C, 0x6801, 0x6401, 0x6001, 0x5C01, 0x5801,
+	0x001F, 0x001E, 0x001D, 0x001C, 0x001B, 0x001A, 0x0019, 0x0018,
+	0x0017, 0x0016, 0x0015, 0x0014, 0x0013, 0x0012, 0x0011, 0x0010,
+]
+
+pri const MDEC_VLC_00000000001 : array[32] base.u16 = [
+	0x0028, 0x0027, 0x0026, 0x0025, 0x0024, 0x0023, 0x0022, 0x0021,
+	0x0020, 0x040E, 0x040D, 0x040C, 0x040B, 0x040A, 0x0409, 0x0408,
+	0x0412, 0x0411, 0x0410, 0x040F, 0x1803, 0x4002, 0x3C02, 0x3802,
+	0x3402, 0x3002, 0x2C02, 0x7C01, 0x7801, 0x7401, 0x7001, 0x6C01,
+]
+
+pub struct mdec_decoder?(
+	bit_buffer : base.u64,
+	bit_count : base.u32[..= 64],
+	byte_index : base.u64,
+	bit_limit : base.u64,
+	error_code : base.u32[..= 3],
+	ac_was_escape : base.u32[..= 1],
+	rl_halfwords : base.u32,
+	coeff : array[64] base.i32[-2048 ..= 2047],
+	temp : array[64] base.i64[-250000 ..= 250000],
+	plane_y : array[76800] base.u8,
+	plane_cb : array[19200] base.u8,
+	plane_cr : array[19200] base.u8,
+)
+
+// Number of compressed bytes consumed by the most recent successful frame.
+pub func mdec_decoder.compressed_bytes_consumed() base.u64 {
+	return 8 ~sat+ this.byte_index
+}
+
+pri func mdec_decoder.read_bits!(src: slice base.u8, n: base.u32[1 ..= 32]) base.u32 {
+	var b : base.u8
+	var physical : base.u64
+	var shift : base.u32[..= 63]
+	var result : base.u64
+
+	while this.bit_count < args.n {
+		if this.bit_count >= 32 {
+			this.error_code = 1
+			return 0
+		}
+		if this.byte_index >= (this.bit_limit / 8) {
+			this.error_code = 1
+			return 0
+		}
+		physical = 8 ~sat+ (this.byte_index ^ 1)
+		if physical >= args.src.length() {
+			this.error_code = 1
+			return 0
+		}
+		b = args.src[physical]
+		this.bit_buffer = (this.bit_buffer ~mod<< 8) | (b as base.u64)
+		this.bit_count += 8
+		this.byte_index ~sat+= 1
+	} endwhile
+	if this.bit_count < args.n {
+		this.error_code = 1
+		return 0
+	}
+	shift = this.bit_count - args.n
+	result = (this.bit_buffer >> shift) & (((1 as base.u64) << args.n) - 1)
+	this.bit_count -= args.n
+	if this.bit_count == 0 {
+		this.bit_buffer = 0
+	} else {
+		this.bit_buffer &= ((1 as base.u64) << this.bit_count) - 1
+	}
+	return result as base.u32
+}
+
+pri func mdec_decoder.signed10(x: base.u32[..= 0x3FF]) base.i32[-512 ..= 511] {
+	if args.x >= 0x200 {
+		return (args.x as base.i32) - 0x400
+	}
+	return args.x as base.i32
+}
+
+pri func mdec_decoder.clamp_dequant(x: base.i64) base.i32[-1024 ..= 1023] {
+	if args.x < -1024 {
+		return -1024
+	} else if args.x > 1023 {
+		return 1023
+	}
+	return args.x as base.i32
+}
+
+// Returns FE00 for EOB, otherwise a 6-bit run and signed 10-bit level packed
+// in the native MDEC halfword layout.
+pri func mdec_decoder.read_ac!(src: slice base.u8) base.u16 {
+	var code : base.u32
+	var zeros : base.u32[..= 12]
+	var index : base.u32[..= 15]
+	var value : base.u16
+	var sign : base.u32
+	var level : base.u16
+
+	this.ac_was_escape = 0
+
+	while zeros < 12 {
+		code = this.read_bits!(src: args.src, n: 1)
+		if this.error_code <> 0 {
+			return 0
+		}
+		if code <> 0 {
+			break
+		}
+		zeros += 1
+	} endwhile
+	if zeros >= 12 {
+		this.error_code = 2
+		return 0
+	}
+	if zeros == 0 {
+		code = this.read_bits!(src: args.src, n: 1)
+		if code == 0 {
+			return 0xFE00
+		}
+		value = 0x0001
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 1 {
+		code = this.read_bits!(src: args.src, n: 1)
+		if code <> 0 {
+			value = 0x0401
+		} else {
+			code = this.read_bits!(src: args.src, n: 1)
+			index = (code & 1) as base.u32
+			if index == 0 {
+				value = 0x0002
+			} else {
+				value = 0x0801
+			}
+		}
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 2 {
+		code = this.read_bits!(src: args.src, n: 1)
+		if code <> 0 {
+			code = this.read_bits!(src: args.src, n: 1)
+			index = (code & 1) as base.u32
+			if index == 0 {
+				value = 0x1001
+			} else {
+				value = 0x0C01
+			}
+		} else {
+			code = this.read_bits!(src: args.src, n: 1)
+			if code <> 0 {
+				value = 0x0003
+			} else {
+				code = this.read_bits!(src: args.src, n: 3)
+				index = (code & 7) as base.u32
+				value = MDEC_VLC_00100[index]
+			}
+		}
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 3 {
+		code = this.read_bits!(src: args.src, n: 2)
+		index = (code & 3) as base.u32
+		value = MDEC_VLC_0001[index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 4 {
+		code = this.read_bits!(src: args.src, n: 2)
+		index = (code & 3) as base.u32
+		value = MDEC_VLC_00001[index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 5 {
+		code = this.read_bits!(src: args.src, n: 16)
+		this.ac_was_escape = 1
+		return (code & 0xFFFF) as base.u16
+	} else if zeros == 6 {
+		code = this.read_bits!(src: args.src, n: 3)
+		index = (code & 7) as base.u32
+		value = MDEC_VLC_0000001[index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 7 {
+		code = this.read_bits!(src: args.src, n: 4)
+		index = (code & 15) as base.u32
+		value = MDEC_VLC_00000001[index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 8 {
+		code = this.read_bits!(src: args.src, n: 4)
+		index = (code & 15) as base.u32
+		value = MDEC_VLC_000000001[index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 9 {
+		code = this.read_bits!(src: args.src, n: 4)
+		index = (code & 15) as base.u32
+		value = MDEC_VLC_000000001[16 + index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else if zeros == 10 {
+		code = this.read_bits!(src: args.src, n: 4)
+		index = (code & 15) as base.u32
+		value = MDEC_VLC_00000000001[index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	} else {
+		code = this.read_bits!(src: args.src, n: 4)
+		index = (code & 15) as base.u32
+		value = MDEC_VLC_00000000001[16 + index]
+		sign = this.read_bits!(src: args.src, n: 1)
+	}
+	if this.error_code <> 0 {
+		return 0
+	}
+	if sign <> 0 {
+		level = value & 0x03FF
+		value = (value & 0xFC00) | ((0 ~mod- level) & 0x03FF)
+	}
+	return value
+}
+
+pri func mdec_decoder.clear_coeff!() {
+	var i : base.u32[..= 64]
+
+	while i < 64 {
+		this.coeff[i] = 0
+		i += 1
+	} endwhile
+}
+
+pri func mdec_decoder.decode_block!(src: slice base.u8) {
+	var dc_bits : base.u32
+	var dc : base.i32[-512 ..= 511]
+	var qscale : base.i32
+	var packed : base.u16
+	var run : base.u32[..= 63]
+	var level_bits : base.u32[..= 0x3FF]
+	var level : base.i32[-512 ..= 511]
+	var k : base.u32[..= 64]
+	var natural : base.u32[..= 63]
+	var dequant : base.i64
+
+	if args.src.length() < 8 {
+		this.error_code = 1
+		return nothing
+	}
+	qscale = ((args.src[4] as base.u32) | ((args.src[5] as base.u32) << 8)) as base.i32
+	if (qscale < 1) or (qscale > 63) {
+		this.error_code = 3
+		return nothing
+	}
+	this.clear_coeff!()
+	dc_bits = this.read_bits!(src: args.src, n: 10)
+	if this.error_code <> 0 {
+		return nothing
+	}
+	this.rl_halfwords ~sat+= 1
+	dc_bits &= 0x03FF
+	if dc_bits == 0x1FF {
+		this.error_code = 3
+		return nothing
+	}
+	dc = this.signed10(x: dc_bits)
+	// The retired decoder performed the level shift in coefficient space.
+	this.coeff[0] = ((dc * 2) + 1024) as base.i32
+	k = 0
+	while k < 64 {
+		packed = this.read_ac!(src: args.src)
+		if this.error_code <> 0 {
+			return nothing
+		}
+		this.rl_halfwords ~sat+= 1
+		if packed == 0xFE00 {
+			break
+		}
+		run = (packed >> 10) as base.u32
+		if (k + run + 1) >= 64 {
+			this.error_code = 3
+			return nothing
+		}
+		k = k + run + 1
+		natural = MDEC_ZIGZAG[k] as base.u32
+		level_bits = (packed & 0x03FF) as base.u32
+		level = this.signed10(x: level_bits)
+		if (level < -512) or (level > 511) or (qscale < 1) or (qscale > 63) {
+			this.error_code = 3
+			return nothing
+		}
+		if level < 0 {
+			dequant = ((((-level) as base.i64) *
+				(MDEC_QUANT[natural] as base.i64) * (qscale as base.i64)) / 8)
+			if (this.ac_was_escape <> 0) and (dequant <> 0) and ((dequant & 1) == 0) {
+				dequant -= 1
+			}
+			dequant = -dequant
+		} else {
+			dequant = (((level as base.i64) * (MDEC_QUANT[natural] as base.i64) *
+				(qscale as base.i64)) / 8)
+			if (this.ac_was_escape <> 0) and (dequant <> 0) and ((dequant & 1) == 0) {
+				dequant -= 1
+			}
+		}
+		this.coeff[natural] = this.clamp_dequant(x: dequant)
+	} endwhile
+	this.idct!()
+}
+
+pri func mdec_decoder.round_row(x: base.i64[-500000000 ..= 500000000]) base.i64[-250000 ..= 250000] {
+	var adjusted : base.i64
+
+	adjusted = args.x + 1024
+	if adjusted >= 0 {
+		return adjusted / 2048
+	}
+	return -(((-adjusted) + 2047) / 2048)
+}
+
+pri func mdec_decoder.idct_pixel(x: base.i64[-50000000000 ..= 50000000000]) base.i32[-128 ..= 127] {
+	var adjusted : base.i64
+	var rounded : base.i64[-50000 ..= 50000]
+
+	// SIMPLE applies its nominal 32-unit rounding offset before multiplying
+	// the DC term by W4 (16383), giving 16383 * 32 rather than 1 << 19.
+	adjusted = args.x + 524256
+	if adjusted >= 0 {
+		rounded = adjusted / 1048576
+	} else {
+		rounded = -(((-adjusted) + 1048575) / 1048576)
+	}
+	if rounded < 0 {
+		return -128
+	} else if rounded > 255 {
+		return 127
+	}
+	return (rounded as base.i32) - 128
+}
+
+pri func mdec_decoder.idct!() {
+	var row : base.u32[..= 8]
+	var x : base.u32[..= 8]
+	var row_offset : base.u32[..= 56]
+	var x0 : base.i64[-250000 ..= 250000]
+	var x1 : base.i64[-250000 ..= 250000]
+	var x2 : base.i64[-250000 ..= 250000]
+	var x3 : base.i64[-250000 ..= 250000]
+	var x4 : base.i64[-250000 ..= 250000]
+	var x5 : base.i64[-250000 ..= 250000]
+	var x6 : base.i64[-250000 ..= 250000]
+	var x7 : base.i64[-250000 ..= 250000]
+	var a0 : base.i64[-25000000000 ..= 25000000000]
+	var a1 : base.i64[-25000000000 ..= 25000000000]
+	var a2 : base.i64[-25000000000 ..= 25000000000]
+	var a3 : base.i64[-25000000000 ..= 25000000000]
+	var b0 : base.i64[-25000000000 ..= 25000000000]
+	var b1 : base.i64[-25000000000 ..= 25000000000]
+	var b2 : base.i64[-25000000000 ..= 25000000000]
+	var b3 : base.i64[-25000000000 ..= 25000000000]
+
+	while row < 8 {
+		row_offset = row * 8
+		if (this.coeff[row_offset + 1] == 0) and
+			(this.coeff[row_offset + 2] == 0) and
+			(this.coeff[row_offset + 3] == 0) and
+			(this.coeff[row_offset + 4] == 0) and
+			(this.coeff[row_offset + 5] == 0) and
+			(this.coeff[row_offset + 6] == 0) and
+			(this.coeff[row_offset + 7] == 0) {
+			x = 0
+			while x < 8 {
+				this.temp[row_offset + x] = (this.coeff[row_offset + 0] as base.i64) * 8
+				x += 1
+			} endwhile
+		} else {
+			x0 = this.coeff[row_offset + 0] as base.i64
+			x1 = this.coeff[row_offset + 1] as base.i64
+			x2 = this.coeff[row_offset + 2] as base.i64
+			x3 = this.coeff[row_offset + 3] as base.i64
+			x4 = this.coeff[row_offset + 4] as base.i64
+			x5 = this.coeff[row_offset + 5] as base.i64
+			x6 = this.coeff[row_offset + 6] as base.i64
+			x7 = this.coeff[row_offset + 7] as base.i64
+			a0 = (MDEC_W4 * x0) + (MDEC_W2 * x2) + (MDEC_W4 * x4) + (MDEC_W6 * x6)
+			a1 = (((MDEC_W4 * x0) + (MDEC_W6 * x2)) - (MDEC_W4 * x4)) - (MDEC_W2 * x6)
+			a2 = (((MDEC_W4 * x0) - (MDEC_W6 * x2)) - (MDEC_W4 * x4)) + (MDEC_W2 * x6)
+			a3 = (((MDEC_W4 * x0) - (MDEC_W2 * x2)) + (MDEC_W4 * x4)) - (MDEC_W6 * x6)
+			b0 = (MDEC_W1 * x1) + (MDEC_W3 * x3) + (MDEC_W5 * x5) + (MDEC_W7 * x7)
+			b1 = (((MDEC_W3 * x1) - (MDEC_W7 * x3)) - (MDEC_W1 * x5)) - (MDEC_W5 * x7)
+			b2 = (((MDEC_W5 * x1) - (MDEC_W1 * x3)) + (MDEC_W7 * x5)) + (MDEC_W3 * x7)
+			b3 = (((MDEC_W7 * x1) - (MDEC_W5 * x3)) + (MDEC_W3 * x5)) - (MDEC_W1 * x7)
+			this.temp[row_offset + 0] = this.round_row(x: a0 + b0)
+			this.temp[row_offset + 1] = this.round_row(x: a1 + b1)
+			this.temp[row_offset + 2] = this.round_row(x: a2 + b2)
+			this.temp[row_offset + 3] = this.round_row(x: a3 + b3)
+			this.temp[row_offset + 4] = this.round_row(x: (a3 - b3))
+			this.temp[row_offset + 5] = this.round_row(x: (a2 - b2))
+			this.temp[row_offset + 6] = this.round_row(x: (a1 - b1))
+			this.temp[row_offset + 7] = this.round_row(x: (a0 - b0))
+		}
+		if row >= 8 {
+			break
+		}
+		row += 1
+	} endwhile
+	x = 0
+	while x < 8 {
+		x0 = this.temp[(0 * 8) + x]
+		x1 = this.temp[(1 * 8) + x]
+		x2 = this.temp[(2 * 8) + x]
+		x3 = this.temp[(3 * 8) + x]
+		x4 = this.temp[(4 * 8) + x]
+		x5 = this.temp[(5 * 8) + x]
+		x6 = this.temp[(6 * 8) + x]
+		x7 = this.temp[(7 * 8) + x]
+		a0 = (MDEC_W4 * x0) + (MDEC_W2 * x2) + (MDEC_W4 * x4) + (MDEC_W6 * x6)
+		a1 = (((MDEC_W4 * x0) + (MDEC_W6 * x2)) - (MDEC_W4 * x4)) - (MDEC_W2 * x6)
+		a2 = (((MDEC_W4 * x0) - (MDEC_W6 * x2)) - (MDEC_W4 * x4)) + (MDEC_W2 * x6)
+		a3 = (((MDEC_W4 * x0) - (MDEC_W2 * x2)) + (MDEC_W4 * x4)) - (MDEC_W6 * x6)
+		b0 = (MDEC_W1 * x1) + (MDEC_W3 * x3) + (MDEC_W5 * x5) + (MDEC_W7 * x7)
+		b1 = (((MDEC_W3 * x1) - (MDEC_W7 * x3)) - (MDEC_W1 * x5)) - (MDEC_W5 * x7)
+		b2 = (((MDEC_W5 * x1) - (MDEC_W1 * x3)) + (MDEC_W7 * x5)) + (MDEC_W3 * x7)
+		b3 = (((MDEC_W7 * x1) - (MDEC_W5 * x3)) + (MDEC_W3 * x5)) - (MDEC_W1 * x7)
+		this.coeff[(0 * 8) + x] = this.idct_pixel(x: a0 + b0)
+		this.coeff[(1 * 8) + x] = this.idct_pixel(x: a1 + b1)
+		this.coeff[(2 * 8) + x] = this.idct_pixel(x: a2 + b2)
+		this.coeff[(3 * 8) + x] = this.idct_pixel(x: a3 + b3)
+		this.coeff[(4 * 8) + x] = this.idct_pixel(x: (a3 - b3))
+		this.coeff[(5 * 8) + x] = this.idct_pixel(x: (a2 - b2))
+		this.coeff[(6 * 8) + x] = this.idct_pixel(x: (a1 - b1))
+		this.coeff[(7 * 8) + x] = this.idct_pixel(x: (a0 - b0))
+		x += 1
+	} endwhile
+}
+
+pri func mdec_decoder.clip_u8(x: base.i32) base.u8 {
+	if args.x < 0 {
+		return 0
+	} else if args.x > 255 {
+		return 255
+	}
+	return args.x as base.u8
+}
+
+pri func mdec_decoder.coeff_pixel(x: base.i32[-2048 ..= 2047]) base.u8 {
+	return this.clip_u8(x: args.x + 128)
+}
+
+pri func mdec_decoder.store_chroma_block!(which: base.u32[..= 1], mb_x: base.u32[..= 19], mb_y: base.u32[..= 14]) {
+	var x : base.u32[..= 8]
+	var y : base.u32[..= 8]
+	var y_offset : base.u32[..= 56]
+	var plane_row : base.u32[..= 19040]
+	var plane_col : base.u32[..= 159]
+	var pi : base.u32[..= 19199]
+	var bi : base.u32[..= 63]
+	var value : base.u8
+
+	while y < 8 {
+		y_offset = y * 8
+		plane_row = ((args.mb_y * 8) * 160) + (y * 160)
+		x = 0
+		while x < 8 {
+			bi = y_offset + x
+			plane_col = (args.mb_x * 8) + x
+			pi = plane_row + plane_col
+			value = this.coeff_pixel(x: this.coeff[bi])
+			if args.which == 0 {
+				this.plane_cr[pi] = value
+			} else {
+				this.plane_cb[pi] = value
+			}
+			x += 1
+		} endwhile
+		if y >= 8 {
+			break
+		}
+		y += 1
+	} endwhile
+}
+
+pri func mdec_decoder.store_y_block!(mb_x: base.u32[..= 19], mb_y: base.u32[..= 14], quadrant: base.u32[..= 3]) {
+	var x : base.u32[..= 8]
+	var y : base.u32[..= 8]
+	var y_offset : base.u32[..= 56]
+	var px : base.u32[..= 319]
+	var py : base.u32[..= 239]
+	var pi : base.u32[..= 76799]
+	var bi : base.u32[..= 63]
+	var value : base.u8
+
+	while y < 8 {
+		y_offset = y * 8
+		py = (args.mb_y * 16) + y + ((args.quadrant >> 1) * 8)
+		x = 0
+		while x < 8 {
+			px = (args.mb_x * 16) + x + ((args.quadrant & 1) * 8)
+			pi = (py * 320) + px
+			bi = y_offset + x
+			value = this.coeff_pixel(x: this.coeff[bi])
+			this.plane_y[pi] = value
+			x += 1
+		} endwhile
+		if y >= 8 {
+			break
+		}
+		y += 1
+	} endwhile
+}
+
+pri func mdec_decoder.convert_color(x: base.i64[-200000000 ..= 200000000]) base.u8 {
+	var adjusted : base.i64
+	var q : base.i64
+
+	adjusted = args.x + 131072
+	if adjusted <= 0 {
+		return 0
+	}
+	q = adjusted / 262144
+	if q > 255 {
+		return 255
+	}
+	return q as base.u8
+}
+
+pri func mdec_decoder.convert_frame!(dst: slice base.u8) {
+	var px : base.u32[..= 320]
+	var py : base.u32[..= 240]
+	var sx : base.u32[..= 159]
+	var sy : base.u32[..= 119]
+	var nx : base.u32[..= 159]
+	var ny : base.u32[..= 119]
+	var y_row : base.u32[..= 76480]
+	var yi : base.u32[..= 76799]
+	var c00 : base.u32[..= 19199]
+	var c10 : base.u32[..= 19199]
+	var c01 : base.u32[..= 19199]
+	var c11 : base.u32[..= 19199]
+	var u16 : base.i64
+	var v16 : base.i64
+	var yy16 : base.i64
+	var acc : base.i64
+	var di : base.u64[..= 307196]
+	var di_end : base.u64[..= 307200]
+	var pixel : slice base.u8
+
+	if args.dst.length() < 307200 {
+		this.error_code = 3
+		return nothing
+	}
+
+	while py < 240 {
+		y_row = py * 320
+		sy = py / 2
+		if (py & 1) == 0 {
+			if sy > 0 {
+				ny = sy - 1
+			} else {
+				ny = 0
+			}
+		} else {
+			if sy < 119 {
+				ny = sy + 1
+			} else {
+				ny = 119
+			}
+		}
+		px = 0
+		while px < 320 {
+			sx = px / 2
+			if (px & 1) == 0 {
+				if sx > 0 {
+					nx = sx - 1
+				} else {
+					nx = 0
+				}
+			} else {
+				if sx < 159 {
+					nx = sx + 1
+				} else {
+					nx = 159
+				}
+			}
+			yi = y_row + px
+			c00 = (sy * 160) + sx
+			c10 = (sy * 160) + nx
+			c01 = (ny * 160) + sx
+			c11 = (ny * 160) + nx
+			u16 = (9 * (this.plane_cb[c00] as base.i64)) +
+				(3 * (this.plane_cb[c10] as base.i64)) +
+				(3 * (this.plane_cb[c01] as base.i64)) +
+				(this.plane_cb[c11] as base.i64)
+			v16 = (9 * (this.plane_cr[c00] as base.i64)) +
+				(3 * (this.plane_cr[c10] as base.i64)) +
+				(3 * (this.plane_cr[c01] as base.i64)) +
+				(this.plane_cr[c11] as base.i64)
+			yy16 = (this.plane_y[yi] as base.i64) * 16
+			di = (yi * 4) as base.u64
+			di_end = di + 4
+			if (di > di_end) or (di_end > args.dst.length()) {
+				this.error_code = 3
+				return nothing
+			}
+			pixel = args.dst[di .. di_end]
+			if pixel.length() < 4 {
+				this.error_code = 3
+				return nothing
+			}
+			acc = (16384 * yy16) + (22970 * (v16 - 2048))
+			pixel[0] = this.convert_color(x: acc)
+			acc = (16384 * yy16) - ((5638 * (u16 - 2048)) +
+				(11700 * (v16 - 2048)))
+			pixel[1] = this.convert_color(x: acc)
+			acc = (16384 * yy16) + (29032 * (u16 - 2048))
+			pixel[2] = this.convert_color(x: acc)
+			pixel[3] = 255
+			if px >= 320 {
+				break
+			}
+			px += 1
+		} endwhile
+		if py >= 240 {
+			break
+		}
+		py += 1
+	} endwhile
+}
+
+pub func mdec_decoder.decode_frame!(dst: slice base.u8, src: slice base.u8) base.status {
+	var magic : base.u32
+	var rlsize : base.u32
+	var version : base.u32
+	var qscale : base.u32
+	var mb : base.u32[..= 300]
+	var mb_x : base.u32[..= 19]
+	var mb_y : base.u32[..= 14]
+	var block : base.u32[..= 6]
+	var expected_rlsize : base.u32
+	var marker : base.u32
+	var bits_consumed : base.u64
+	var remaining_bits : base.u64[..= 31]
+	var padding_bit : base.u32
+
+	if args.dst.length() <> (MDEC_RGBA_SIZE as base.u64) {
+		return "#wrong MDEC output size"
+	}
+	if (args.src.length() < 12) or (args.src.length() > 32768) or
+		((args.src.length() & 3) <> 0) {
+		return "#truncated MDEC input"
+	}
+	magic = (args.src[2] as base.u32) | ((args.src[3] as base.u32) << 8)
+	rlsize = (args.src[0] as base.u32) | ((args.src[1] as base.u32) << 8)
+	qscale = (args.src[4] as base.u32) | ((args.src[5] as base.u32) << 8)
+	version = (args.src[6] as base.u32) | ((args.src[7] as base.u32) << 8)
+	if (magic <> 0x3800) or (version <> 2) or (qscale < 1) or (qscale > 63) or
+		(rlsize == 0) {
+		return "#bad MDEC header"
+	}
+	this.bit_buffer = 0
+	this.bit_count = 0
+	this.byte_index = 0
+	this.bit_limit = (args.src.length() - 8) * 8
+	this.error_code = 0
+	this.rl_halfwords = 0
+	mb = 0
+	while mb < 300 {
+		mb_x = mb / 15
+		mb_y = mb % 15
+		block = 0
+		while block < 6 {
+			this.decode_block!(src: args.src)
+			if this.error_code == 1 {
+				return "#truncated MDEC input"
+			} else if this.error_code == 2 {
+				return "#bad MDEC Huffman code"
+			} else if this.error_code <> 0 {
+				return "#bad MDEC run level"
+			}
+			if block < 2 {
+				this.store_chroma_block!(which: block, mb_x: mb_x, mb_y: mb_y)
+			} else {
+				this.store_y_block!(mb_x: mb_x, mb_y: mb_y, quadrant: block - 2)
+			}
+			block += 1
+		} endwhile
+		if mb >= 300 {
+			break
+		}
+		mb += 1
+	} endwhile
+	if this.rl_halfwords > 117000 {
+		return "#bad MDEC framing"
+	}
+	expected_rlsize = ((this.rl_halfwords + 63) / 64) * 32
+	if rlsize <> expected_rlsize {
+		return "#bad MDEC framing"
+	}
+	marker = this.read_bits!(src: args.src, n: 10)
+	if this.error_code <> 0 {
+		return "#truncated MDEC input"
+	} else if marker <> 0x1FF {
+		return "#bad MDEC framing"
+	}
+	if this.byte_index > 32760 {
+		return "#bad MDEC framing"
+	}
+	bits_consumed = (this.byte_index * 8) ~sat- (this.bit_count as base.u64)
+	if (bits_consumed > this.bit_limit) or
+		((this.bit_limit ~sat- bits_consumed) > 31) {
+		return "#bad MDEC framing"
+	}
+	remaining_bits = (this.bit_limit ~sat- bits_consumed) as base.u64
+	while remaining_bits > 0 {
+		padding_bit = this.read_bits!(src: args.src, n: 1)
+		if this.error_code <> 0 {
+			return "#truncated MDEC input"
+		} else if padding_bit <> 0 {
+			return "#bad MDEC framing"
+		}
+		remaining_bits -= 1
+	} endwhile
+	this.convert_frame!(dst: args.dst)
+	return ok
+}

@@ -1,0 +1,302 @@
+// SPDX-License-Identifier: MIT
+//
+// Narrow PlayStation STR sector framing for the fingerprinted NTSC-U disc.
+// This is deliberately not a general CD-ROM or STR demuxer. It accepts the
+// raw MODE2/2352 sectors, stream numbers, dimensions and MDEC revision that
+// the supported retail movies actually use.
+
+pub status "#bad STR sector"
+pub status "#bad STR sequence"
+pub status "#truncated STR sector"
+pub status "#unsupported STR sector"
+
+pub const STR_SECTOR_KIND__EMPTY : base.u32 = 0
+pub const STR_SECTOR_KIND__VIDEO : base.u32 = 1
+pub const STR_SECTOR_KIND__AUDIO : base.u32 = 2
+
+pub const STR_RAW_SECTOR_LENGTH : base.u64 = 2352
+pub const STR_VIDEO_PAYLOAD_OFFSET : base.u32 = 56
+pub const STR_VIDEO_PAYLOAD_LENGTH : base.u32 = 2016
+pub const STR_AUDIO_PAYLOAD_OFFSET : base.u32 = 24
+pub const STR_AUDIO_PAYLOAD_LENGTH : base.u32 = 2304
+
+pub struct str_demuxer?(
+	video_active       : base.bool,
+	seen_video         : base.bool,
+	current_frame      : base.u32,
+	next_chunk         : base.u32,
+	current_chunk_count: base.u32,
+	current_frame_size : base.u32,
+	current_qscale     : base.u32,
+
+	video_frame_count_value  : base.u64,
+	audio_sector_count_value : base.u64,
+
+	sector_kind_value        : base.u32,
+	payload_offset_value     : base.u32,
+	payload_length_value     : base.u32,
+	frame_number_value       : base.u32,
+	chunk_index_value        : base.u32,
+	chunk_count_value        : base.u32,
+	encoded_frame_size_value : base.u32,
+	qscale_value             : base.u32,
+	audio_coding_info_value  : base.u32,
+	frame_complete_value     : base.bool,
+)
+
+pub func str_demuxer.restart!() {
+	this.video_active = false
+	this.seen_video = false
+	this.current_frame = 0
+	this.next_chunk = 0
+	this.current_chunk_count = 0
+	this.current_frame_size = 0
+	this.current_qscale = 0
+	this.video_frame_count_value = 0
+	this.audio_sector_count_value = 0
+	this.clear_result!()
+}
+
+pri func str_demuxer.clear_result!() {
+	this.sector_kind_value = STR_SECTOR_KIND__EMPTY
+	this.payload_offset_value = 0
+	this.payload_length_value = 0
+	this.frame_number_value = 0
+	this.chunk_index_value = 0
+	this.chunk_count_value = 0
+	this.encoded_frame_size_value = 0
+	this.qscale_value = 0
+	this.audio_coding_info_value = 0
+	this.frame_complete_value = false
+}
+
+// parse_sector validates one complete raw sector and updates the video-frame
+// sequencing state. On success, payload_offset and payload_length identify a
+// bounded view within the caller-owned sector. Video payload_length excludes
+// sector padding after encoded_frame_size, so it can legitimately be zero for
+// trailing chunks in a constant-rate authored frame.
+pub func str_demuxer.parse_sector!(sector: slice base.u8) base.status {
+	var submode            : base.u32
+	var chunk_index        : base.u32
+	var chunk_count        : base.u32
+	var frame_number       : base.u32
+	var encoded_frame_size : base.u32
+	var width               : base.u32
+	var height              : base.u32
+	var chunk_start         : base.u32
+	var payload_length      : base.u32
+	var qscale              : base.u32
+
+	this.clear_result!()
+	if args.sector.length() < STR_RAW_SECTOR_LENGTH {
+		return "#truncated STR sector"
+	}
+	if args.sector.length() <> STR_RAW_SECTOR_LENGTH {
+		return "#bad STR sector"
+	}
+
+	// CD-ROM sync pattern, MODE2 marker and duplicated XA subheader.
+	if (args.sector[0] <> 0x00) or
+		(args.sector[1] <> 0xFF) or (args.sector[2] <> 0xFF) or
+		(args.sector[3] <> 0xFF) or (args.sector[4] <> 0xFF) or
+		(args.sector[5] <> 0xFF) or (args.sector[6] <> 0xFF) or
+		(args.sector[7] <> 0xFF) or (args.sector[8] <> 0xFF) or
+		(args.sector[9] <> 0xFF) or (args.sector[10] <> 0xFF) or
+		(args.sector[11] <> 0x00) {
+		return "#bad STR sector"
+	}
+	if args.sector[15] <> 0x02 {
+		return "#bad STR sector"
+	}
+	if (args.sector[16] <> args.sector[20]) or
+		(args.sector[17] <> args.sector[21]) or
+		(args.sector[18] <> args.sector[22]) or
+		(args.sector[19] <> args.sector[23]) {
+		return "#bad STR sector"
+	}
+
+	submode = args.sector[18] as base.u32
+	if submode == 0x00 {
+		if args.sector[17] <> 0x00 {
+			return "#unsupported STR sector"
+		}
+		return ok
+	}
+
+	// EOF may be set on the last physical video sector when video is the
+	// stream that reaches the end of the ISO extent.
+	if (submode == 0x48) or (submode == 0xC8) {
+		if args.sector[17] <> 0x01 {
+			return "#unsupported STR sector"
+		}
+		if (args.sector[24] <> 0x60) or
+			(args.sector[25] <> 0x01) or
+			(args.sector[26] <> 0x01) or
+			(args.sector[27] <> 0x80) {
+			return "#bad STR sector"
+		}
+
+		chunk_index = (args.sector[28] as base.u32) |
+			((args.sector[29] as base.u32) << 8)
+		chunk_count = (args.sector[30] as base.u32) |
+			((args.sector[31] as base.u32) << 8)
+		frame_number = (args.sector[32] as base.u32) |
+			((args.sector[33] as base.u32) << 8) |
+			((args.sector[34] as base.u32) << 16) |
+			((args.sector[35] as base.u32) << 24)
+		encoded_frame_size = (args.sector[36] as base.u32) |
+			((args.sector[37] as base.u32) << 8) |
+			((args.sector[38] as base.u32) << 16) |
+			((args.sector[39] as base.u32) << 24)
+		width = (args.sector[40] as base.u32) |
+			((args.sector[41] as base.u32) << 8)
+		height = (args.sector[42] as base.u32) |
+			((args.sector[43] as base.u32) << 8)
+
+		if (chunk_count < 6) or (chunk_count > 11) or
+			(chunk_index >= chunk_count) or
+			(encoded_frame_size == 0) or
+			(encoded_frame_size > (chunk_count * STR_VIDEO_PAYLOAD_LENGTH)) or
+			(width <> 320) or (height <> 240) or
+			(frame_number == 0xFFFF_FFFF) {
+			return "#unsupported STR sector"
+		}
+
+		if chunk_index == 0 {
+			if this.video_active {
+				return "#bad STR sequence"
+			}
+			if (not this.seen_video and (frame_number <> 1)) or
+				(this.seen_video and
+					(frame_number <> (this.current_frame ~mod+ 1))) {
+				return "#bad STR sequence"
+			}
+			// The first video payload starts with the MDEC bitstream preamble.
+			// The supported disc uses magic 0x3800 and version 2 throughout.
+			if (args.sector[58] <> 0x00) or (args.sector[59] <> 0x38) or
+				(args.sector[62] <> 0x02) or (args.sector[63] <> 0x00) {
+				return "#unsupported STR sector"
+			}
+			qscale = (args.sector[60] as base.u32) |
+				((args.sector[61] as base.u32) << 8)
+			if (qscale < 1) or (qscale > 7) {
+				return "#unsupported STR sector"
+			}
+			this.video_active = true
+			this.seen_video = true
+			this.current_frame = frame_number
+			this.current_chunk_count = chunk_count
+			this.current_frame_size = encoded_frame_size
+			this.current_qscale = qscale
+			this.next_chunk = 0
+		} else if (not this.video_active) or
+			(frame_number <> this.current_frame) or
+			(chunk_count <> this.current_chunk_count) or
+			(encoded_frame_size <> this.current_frame_size) or
+			(chunk_index <> this.next_chunk) {
+			return "#bad STR sequence"
+		}
+
+		chunk_start = chunk_index * STR_VIDEO_PAYLOAD_LENGTH
+		if chunk_start < encoded_frame_size {
+			payload_length = encoded_frame_size ~sat- chunk_start
+			if payload_length > STR_VIDEO_PAYLOAD_LENGTH {
+				payload_length = STR_VIDEO_PAYLOAD_LENGTH
+			}
+		}
+
+		this.sector_kind_value = STR_SECTOR_KIND__VIDEO
+		this.payload_offset_value = STR_VIDEO_PAYLOAD_OFFSET
+		this.payload_length_value = payload_length
+		this.frame_number_value = frame_number
+		this.chunk_index_value = chunk_index
+		this.chunk_count_value = chunk_count
+		this.encoded_frame_size_value = encoded_frame_size
+		this.qscale_value = this.current_qscale
+		this.next_chunk = chunk_index + 1
+		if this.next_chunk == chunk_count {
+			this.frame_complete_value = true
+			this.video_active = false
+			this.video_frame_count_value ~sat+= 1
+		}
+		return ok
+	}
+
+	// XA audio is FORM2 + realtime + audio, with EOF optionally set on the
+	// final sector. Only channel 1, stereo 4-bit at 18.9/37.8 kHz is shipped.
+	if (submode == 0x64) or (submode == 0xE4) {
+		if args.sector[17] <> 0x01 {
+			return "#unsupported STR sector"
+		}
+		if (args.sector[19] <> 0x01) and (args.sector[19] <> 0x05) {
+			return "#unsupported STR sector"
+		}
+		this.sector_kind_value = STR_SECTOR_KIND__AUDIO
+		this.payload_offset_value = STR_AUDIO_PAYLOAD_OFFSET
+		this.payload_length_value = STR_AUDIO_PAYLOAD_LENGTH
+		this.audio_coding_info_value = args.sector[19] as base.u32
+		this.audio_sector_count_value ~sat+= 1
+		return ok
+	}
+
+	return "#unsupported STR sector"
+}
+
+// end_of_stream rejects a stream that ends between video chunks.
+pub func str_demuxer.end_of_stream!() base.status {
+	if this.video_active {
+		return "#bad STR sequence"
+	}
+	return ok
+}
+
+pub func str_demuxer.sector_kind() base.u32 {
+	return this.sector_kind_value
+}
+
+pub func str_demuxer.payload_offset() base.u32 {
+	return this.payload_offset_value
+}
+
+pub func str_demuxer.payload_length() base.u32 {
+	return this.payload_length_value
+}
+
+pub func str_demuxer.frame_number() base.u32 {
+	return this.frame_number_value
+}
+
+pub func str_demuxer.chunk_index() base.u32 {
+	return this.chunk_index_value
+}
+
+pub func str_demuxer.chunk_count() base.u32 {
+	return this.chunk_count_value
+}
+
+pub func str_demuxer.encoded_frame_size() base.u32 {
+	return this.encoded_frame_size_value
+}
+
+pub func str_demuxer.qscale() base.u32 {
+	return this.qscale_value
+}
+
+pub func str_demuxer.audio_coding_info() base.u32 {
+	return this.audio_coding_info_value
+}
+
+pub func str_demuxer.frame_complete() base.u32 {
+	if this.frame_complete_value {
+		return 1
+	}
+	return 0
+}
+
+pub func str_demuxer.video_frame_count() base.u64 {
+	return this.video_frame_count_value
+}
+
+pub func str_demuxer.audio_sector_count() base.u64 {
+	return this.audio_sector_count_value
+}

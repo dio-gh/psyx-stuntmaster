@@ -3,7 +3,7 @@
 psyx-stuntmaster is an experimental Windows-native host for the NTSC-U release
 of **Jackie Chan Stuntmaster** (`SLUS-00684`). It runs the original R3000A game
 code while replacing the console boundary with native input, OpenGL/PGXP
-presentation, OpenAL audio, FFmpeg movie playback, saves, and a small launcher.
+presentation, OpenAL audio, homegrown Wuffs-generated movie codecs, and saves.
 
 The project does not contain the game. You need a legally obtained dump of the
 supported disc in BIN/CUE format.
@@ -109,11 +109,10 @@ Requirements:
 - Git;
 - Visual Studio 2022 with **Desktop development with C++**, **C++ CMake tools
   for Windows**, and **vcpkg** components;
-- MSYS2 installed at `C:\msys64`, with NASM (`pacman -S --needed nasm`);
 - an internet connection for the first build.
 
 Clone normally; `--recurse-submodules` is optional because the script
-initializes PsyCross when needed:
+initializes the pinned Wuffs and PsyCross submodules when needed:
 
 ```bat
 git clone https://github.com/neonoxd/psyx-stuntmaster.git
@@ -121,13 +120,10 @@ cd stuntmaster
 tools\build_windows.cmd
 ```
 
-The script discovers the installed Visual Studio edition, downloads and
-signature-verifies the authentic FFmpeg 8.1.2 source release, builds only the
-STR/MDEC/XA decoding surface as static libraries, lets vcpkg provide the
-smaller SDL2/OpenAL dependencies, builds `RelWithDebInfo`, and runs the tests.
-The first FFmpeg build takes roughly two minutes on a current four-core host;
-later builds verify and reuse it. Downloads and build products stay under the
-ignored `build` directory.
+The script discovers the installed Visual Studio edition, compiles the
+checked-in C generated from the pinned Wuffs toolchain, lets vcpkg provide the
+SDL2/OpenAL dependencies, builds `RelWithDebInfo`, and runs the tests. Downloads
+and build products stay under the ignored `build` directory.
 
 Other build modes:
 
@@ -143,10 +139,9 @@ The full build outputs the single, self-configuring `stuntmaster.exe` under
 disc-boundary work, goes under `build\windows-core\<configuration>`.
 
 You can still configure CMake directly. Set
-`STUNTMASTER_ENABLE_PSYCROSS=ON`, use the
-`x64-windows-static-release` overlay triplet,
-and point `STUNTMASTER_FFMPEG_ROOT` at the source-built install root containing
-`include` and `lib`. The build script is the reference configuration.
+`STUNTMASTER_ENABLE_PSYCROSS=ON` and use the
+`x64-windows-static-release` overlay triplet. The build script is the reference
+configuration.
 
 ## Create a release build
 
@@ -157,8 +152,7 @@ tools\package_windows.cmd
 ```
 
 This performs a cleanly configured Release build, runs the deterministic test
-suite, confirms FFmpeg is statically linked (no FFmpeg DLLs imported), and
-stages the single upload-ready executable:
+suite, and stages the single upload-ready executable:
 
 ```text
 dist\stuntmaster-pc-0.0.1-windows-x64.exe
@@ -170,8 +164,8 @@ defaults into `Documents\Stuntmaster` on first run and embeds every third-party
 license text. It contains no disc image, extracted retail asset, user
 configuration, or save file. Alongside it, automated Releases also publish a
 separate `stuntmaster-pc-<version>-corresponding-source.zip` with the exact
-application, PsyCross, and signed FFmpeg source needed to modify FFmpeg and
-relink; see [FFmpeg source and relinking](docs/FFMPEG_RELINKING.md).
+application, PsyCross, and Wuffs source needed to modify dependencies and
+relink.
 
 ## Development commands
 

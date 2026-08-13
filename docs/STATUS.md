@@ -24,7 +24,7 @@ speed-preserving high-frequency guest update, now tunable to any multiple of
 | Input | Working | Remappable SDL keyboard/gamepad input reaches the retail PAD buffer; the host reports port one as a DualShock so the retail vibration gates open, and the game's motor values drive `SDL_GameControllerRumble` on the first attached gamepad. |
 | PsyCross presentation | Default, working | Title, first level, textures, HUD, pause overlay, widescreen view, and high-rate presentation have been live-validated. |
 | Audio | Working | Register-level SPU, DMA sample upload, ADPCM voices, streaming music interrupts, ADSR, reverb, OpenAL output, WAV capture, and native-movie audio hand-off are implemented. |
-| FMV | Working on tested route | FFmpeg decodes raw-disc STR/MDEC video and XA-ADPCM audio on the main thread. Start skips the active movie; movie hand-offs suppress stale splash frames and have been live-validated; headless and decode-failure paths retain the caller-gated skip. |
+| FMV | Working on tested route | Homegrown Wuffs-generated codecs decode the shipped raw-disc STR/MDEC v2 video and stereo 4-bit XA-ADPCM on the main thread. All nine movie assets pass disc-backed decode validation. Start skips the active movie; movie hand-offs suppress stale splash frames and have been live-validated; headless and decode-failure paths retain the caller-gated skip. |
 | Saves | Working | Retail slot-one flows use a persistent standard 128 KiB memory-card image. F5/F9 persist a versioned full-machine quick save; F6 writes timestamped states; `--load-quick-save` restores a selected file at launch. Slot two remains disconnected. |
 | Full campaign | Not validated | First 2 chapters validated and reported completable. Longer levels and later transitions need coverage. |
 | Native launcher | Working | The dependency-free Win32 launcher selects the BIN/CUE folder, resolution tier, 60 Hz mode, and widescreen mode. It persists `stuntmaster.ini`; accepted Display-menu, F7, and F8 changes update the same file. Direct game launches consume those defaults and explicit command-line options take precedence. |
@@ -277,8 +277,8 @@ The following flags are diagnostic or experimental, not recommended defaults:
   fully filled loading page. `Game::PlayMovie` then supplies the bare STR
   filename in `a1`; the host captures it at `0x8002BBF0` and keeps suppression
   active. Retail continues its display/audio setup, then pauses at the caller-gated
-  `MoviePlayer::Play` boundary `0x80014534` while the main thread owns FFmpeg,
-  OpenGL, OpenAL, and movie input.
+  `MoviePlayer::Play` boundary `0x80014534` while the main thread owns the
+  Wuffs-generated codecs, OpenGL, OpenAL, and movie input.
 - At that later movie boundary, the main thread discards queued pre-movie GPU
   frames before releasing the guest. The last
   decoded movie frame remains visible across verified consecutive movie call

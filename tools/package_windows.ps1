@@ -25,21 +25,6 @@ if (-not (Test-Path -LiteralPath $builtExe -PathType Leaf)) {
     throw "Release build did not produce $builtExe."
 }
 
-# The release must be statically linked. Guard against an accidental dynamic
-# FFmpeg by rejecting any FFmpeg runtime DLL among the executable's imports.
-$dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-if ($dumpbin) {
-    $dependents = & $dumpbin.Source /dependents $builtExe
-    $ffmpegDlls = @($dependents | Where-Object {
-        $_ -match '(?i)\b(avcodec|avformat|avutil|swresample|swscale)-[0-9]+\.dll\b'
-    })
-    if ($ffmpegDlls.Count -ne 0) {
-        throw "Release executable dynamically imports FFmpeg: $(($ffmpegDlls | ForEach-Object { $_.Trim() }) -join ', ')"
-    }
-} else {
-    Write-Warning 'dumpbin.exe not found; skipping the static-FFmpeg import check.'
-}
-
 New-Item -ItemType Directory -Path $DistRoot -Force | Out-Null
 $artifact = Join-Path $DistRoot "stuntmaster-pc-$version-windows-x64.exe"
 Copy-Item -LiteralPath $builtExe -Destination $artifact -Force
@@ -47,8 +32,8 @@ if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
     throw "Failed to stage the release executable at $artifact."
 }
 
-# The LGPL corresponding-source bundle ships alongside the statically linked
-# FFmpeg build; its name mirrors the executable's version.
+# The corresponding-source bundle ships alongside the executable and mirrors
+# its version.
 $sourceBundle = Join-Path $DistRoot `
     "stuntmaster-pc-$version-corresponding-source.zip"
 & (Join-Path $PSScriptRoot 'package_source_bundle.ps1') `

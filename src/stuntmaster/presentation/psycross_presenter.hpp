@@ -123,7 +123,7 @@ public:
     void presentBlackFrame();
 
     // Present a decoded native RGBA movie frame through the same main-thread
-    // window/context as gameplay. Rows are top-down, matching FFmpeg output.
+    // window/context as gameplay. Rows are top-down, matching movie output.
     void presentMovieFrame(
         std::span<const std::uint8_t> rgba8888,
         std::uint32_t width,

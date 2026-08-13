@@ -21,9 +21,7 @@ struct LicenseEntry {
 constexpr LicenseEntry license_entries[] = {
     {IDR_LICENSE_STUNTMASTER, "Stuntmaster PC (MIT)"},
     {IDR_LICENSE_THIRD_PARTY, "Third-party notices"},
-    {IDR_LICENSE_FFMPEG_LGPL21, "FFmpeg (LGPL v2.1)"},
-    {IDR_LICENSE_FFMPEG_LGPL3, "FFmpeg (LGPL v3)"},
-    {IDR_LICENSE_FFMPEG_MAIN, "FFmpeg (LICENSE)"},
+    {IDR_LICENSE_WUFFS, "Wuffs (Apache 2.0)"},
     {IDR_LICENSE_SDL2, "SDL2"},
     {IDR_LICENSE_OPENAL, "OpenAL Soft"},
     {IDR_LICENSE_FMT, "fmt"},

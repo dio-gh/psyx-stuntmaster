@@ -195,15 +195,6 @@ if ($BuildEnvironmentPath) {
         'build_configuration',
         'vcpkg_triplet',
         'vcpkg_builtin_baseline',
-        'ffmpeg_version',
-        'ffmpeg_source_url',
-        'ffmpeg_source_sha256',
-        'ffmpeg_signature_sha256',
-        'ffmpeg_release_key_fingerprint',
-        'ffmpeg_configuration_id',
-        'ffmpeg_linkage',
-        'ffmpeg_configure_options',
-        'nasm_version',
         'source_date_epoch',
         'reproducibility_options',
         'toolchain_digest_algorithm',
@@ -221,12 +212,6 @@ if ($BuildEnvironmentPath) {
     }
     if ($buildEnvironment.schema_version -ne '3') {
         throw "Unsupported build environment schema: $($buildEnvironment.schema_version)"
-    }
-    if ($buildEnvironment.ffmpeg_version -ne '8.1.2' -or
-            $buildEnvironment.ffmpeg_source_sha256 -ne
-                '464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c' -or
-            $buildEnvironment.ffmpeg_linkage -ne 'static') {
-        throw 'Build environment does not describe the pinned static FFmpeg build.'
     }
     if ($buildEnvironment.toolchain_digest_algorithm -ne 'SHA256') {
         throw "Unsupported toolchain digest algorithm: $($buildEnvironment.toolchain_digest_algorithm)"
@@ -283,6 +268,10 @@ $PsyCrossCommit = (& git -C $RepoRoot rev-parse HEAD:external/PsyCross).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not determine the PsyCross gitlink.'
 }
+$WuffsCommit = (& git -C $RepoRoot rev-parse HEAD:external/wuffs).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not determine the Wuffs gitlink.'
+}
 
 $archiveStream = [IO.File]::OpenRead($Archive)
 $archiveSha256 = Get-HexDigest -Stream $archiveStream `
@@ -323,20 +312,15 @@ $packages += New-Package `
     -FilesAnalyzed $false `
     -Purl "pkg:github/neonoxd/PsyCross@$PsyCrossCommit" `
     -Comment 'Statically linked into stuntmaster.exe.'
-$ffmpeg = New-Package `
-    -Id 'SPDXRef-Package-FFmpeg-LGPL' `
-    -Name 'FFmpeg' `
-    -Version '8.1.2' `
-    -DownloadLocation 'https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz' `
-    -License 'LGPL-2.1-or-later' `
+$packages += New-Package `
+    -Id 'SPDXRef-Package-Wuffs' `
+    -Name 'Wuffs' `
+    -Version '0.3.4' `
+    -DownloadLocation "https://github.com/google/wuffs/tree/$WuffsCommit" `
+    -License 'Apache-2.0' `
     -FilesAnalyzed $false `
-    -Purl 'pkg:generic/ffmpeg@8.1.2' `
-    -Comment 'Built from the authentic signed upstream source and statically linked into stuntmaster.exe. The minimal build enables only the str demuxer plus mdec and adpcm_xa decoders; no GPL, nonfree, network, program, encoder, muxer, protocol, filter, or device component is enabled.'
-$ffmpeg.checksums = @([ordered]@{
-    algorithm = 'SHA256'
-    checksumValue = '464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c'
-})
-$packages += $ffmpeg
+    -Purl "pkg:github/google/wuffs@$WuffsCommit" `
+    -Comment 'Pinned Wuffs compiler/runtime source; the checked-in generated C codec package is statically linked into stuntmaster.exe.'
 
 $vcpkgPackages = Read-VcpkgStatus -Path $VcpkgStatusPath
 $vcpkgPackageIds = @()
@@ -388,7 +372,7 @@ $relationships = @(
     [ordered]@{
         spdxElementId = 'SPDXRef-Package-Stuntmaster'
         relationshipType = 'DEPENDS_ON'
-        relatedSpdxElement = 'SPDXRef-Package-FFmpeg-LGPL'
+        relatedSpdxElement = 'SPDXRef-Package-Wuffs'
     }
 )
 foreach ($id in $vcpkgPackageIds) {
@@ -408,7 +392,7 @@ foreach ($id in $vcpkgPackageIds) {
 }
 
 # The release artifact is the single, self-configuring executable, not an
-# archive of many files. Describe that one file. The FFmpeg/fmt/OpenAL/SDL2
+# archive of many files. Describe that one file. The Wuffs/fmt/OpenAL/SDL2
 # license texts it used to ship as separate files are now embedded in the
 # executable; those components stay represented by the runtime component
 # packages above (DEPENDS_ON), so no per-file GENERATED_FROM edges are emitted.
@@ -489,7 +473,7 @@ if ($SummaryPath) {
         switch ($Id) {
             'SPDXRef-Package-Stuntmaster' { return 'Application' }
             'SPDXRef-Package-PsyCross' { return 'Statically linked source dependency' }
-            'SPDXRef-Package-FFmpeg-LGPL' { return 'Statically linked source dependency' }
+            'SPDXRef-Package-Wuffs' { return 'Generated-code source dependency' }
             { $_ -match '^SPDXRef-Package-vcpkg-(vcpkg-cmake|vcpkg-cmake-config)-' } {
                 return 'Build helper'
             }
@@ -554,15 +538,6 @@ if ($SummaryPath) {
             build_configuration = 'Build configuration'
             vcpkg_triplet = 'vcpkg triplet'
             vcpkg_builtin_baseline = 'vcpkg baseline'
-            ffmpeg_version = 'FFmpeg version'
-            ffmpeg_source_url = 'FFmpeg source'
-            ffmpeg_source_sha256 = 'FFmpeg source SHA-256'
-            ffmpeg_signature_sha256 = 'FFmpeg signature SHA-256'
-            ffmpeg_release_key_fingerprint = 'FFmpeg signing-key fingerprint'
-            ffmpeg_configuration_id = 'FFmpeg configuration digest'
-            ffmpeg_linkage = 'FFmpeg linkage'
-            ffmpeg_configure_options = 'FFmpeg configure options'
-            nasm_version = 'NASM version'
             source_date_epoch = 'SOURCE_DATE_EPOCH'
             reproducibility_options = 'Reproducibility options'
             toolchain_digest_algorithm = 'Toolchain digest algorithm'

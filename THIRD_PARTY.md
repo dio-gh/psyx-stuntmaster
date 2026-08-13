@@ -38,31 +38,21 @@ downloaded packages and build trees remain under ignored build/user-cache
 locations. Release archives are linked against their static-library variants
 and carry their license notices.
 
-## FFmpeg
+## Wuffs
 
-- Project: <https://ffmpeg.org/>
-- Authentic source release: `8.1.2`
-- Source URL: <https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz>
-- Source SHA-256: `464BEB5E7BF0C311E68B45AE2F04E9CC2AF88851ABB4082231742A74D97B524C`
-- Detached-signature SHA-256: `0A0963FCCD70597838073F3E31B20F4A4D8CC2B5E577472C9A5A1F22624246F8`
-- Release-key SHA-256: `397B3BECEDCD5A98769967FF1FF8501DDC89F8368B8F766E4701377D7DBAABE5`
-- Required primary fingerprint: `FCF986EA15E6E293A5644F10B4322F04D67658D8`
-- License: LGPL 2.1 or later
+- Project: <https://github.com/google/wuffs>
+- Pinned tag: `v0.3.4`
+- Pinned submodule revision: `ec71f9c6d829ca763fbbc1f7adecc30a89a8ed0a`
+- License: Apache-2.0
+- Path: `external/wuffs`
 
-The build downloads only FFmpeg's official source archive, detached signature,
-and release key. It verifies all three hashes, requires the exact key
-fingerprint, and verifies the signature in an isolated GnuPG keyring before
-compiling. The explicit configuration enables the `str` demuxer, `mdec` and
-`adpcm_xa` decoders, and the `avcodec`, `avformat`, `avutil`, `swresample`, and
-`swscale` libraries. Programs, encoders, muxers, protocols, networking,
-filters, devices, GPL, version-3-only, and nonfree code are disabled and the
-resulting feature matrix is checked before compilation.
-
-Those five libraries are built with MSVC `/O2 /Brepro /MT /GL` and NASM, then
-statically linked into `stuntmaster.exe`; no FFmpeg DLL is distributed. Release
-archives include FFmpeg's LGPL and upstream license notices. Each automated
-draft Release also carries an exact corresponding-source/relinking bundle; see
-[docs/FFMPEG_RELINKING.md](docs/FFMPEG_RELINKING.md).
+Wuffs is the source language, proof-checking compiler, and C runtime used for
+the homegrown PlayStation STR, MDEC v2, and stereo 4-bit CD-XA codecs under
+`src/stuntmaster/media/wuffs`. These codecs target only the formats present on
+the fingerprinted retail disc. Generated C is checked in so ordinary builds do
+not require Go or execute the Wuffs compiler. The self-contained release
+executable embeds Wuffs' Apache-2.0 license. See
+[the codec scope](docs/WUFFS_CODEC_REPLACEMENT.md).
 
 ## psx_mnd_sym format reference
 

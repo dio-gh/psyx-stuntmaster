@@ -25,8 +25,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "STUNTMASTER_ENABLE_PSYCROSS": "ON",
-        "STUNTMASTER_FFMPEG_ROOT": "$env{STUNTMASTER_FFMPEG_ROOT}"
+        "STUNTMASTER_ENABLE_PSYCROSS": "ON"
       }
     }
   ],

@@ -8,11 +8,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$FfmpegVersion = '8.1.2'
-$FfmpegSha256 = '464BEB5E7BF0C311E68B45AE2F04E9CC2AF88851ABB4082231742A74D97B524C'
-$FfmpegSignatureSha256 = '0A0963FCCD70597838073F3E31B20F4A4D8CC2B5E577472C9A5A1F22624246F8'
-$FfmpegKeySha256 = '397B3BECEDCD5A98769967FF1FF8501DDC89F8368B8F766E4701377D7DBAABE5'
-$FfmpegFingerprint = 'FCF986EA15E6E293A5644F10B4322F04D67658D8'
 
 function Invoke-Native {
     param(
@@ -23,11 +18,6 @@ function Invoke-Native {
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code ${LASTEXITCODE}: $FilePath"
     }
-}
-
-function Get-Sha256 {
-    param([Parameter(Mandatory = $true)][string] $Path)
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
 }
 
 function Remove-VerifiedTree {
@@ -61,13 +51,20 @@ function Remove-VerifiedTree {
 $ProjectVersion = & (Join-Path $PSScriptRoot 'resolve_release_version.ps1')
 if (-not $SourceCommit) {
     $SourceCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not determine the exact Stuntmaster source commit.'
+    }
 }
-if ($LASTEXITCODE -ne 0 -or $SourceCommit -notmatch '^[0-9a-f]{40}$') {
+if ($SourceCommit -notmatch '^[0-9a-f]{40}$') {
     throw 'Could not determine the exact Stuntmaster source commit.'
 }
 $PsyCrossCommit = (& git -C $RepoRoot rev-parse "${SourceCommit}:external/PsyCross").Trim()
 if ($LASTEXITCODE -ne 0 -or $PsyCrossCommit -notmatch '^[0-9a-f]{40}$') {
     throw 'Could not determine the pinned PsyCross gitlink.'
+}
+$WuffsCommit = (& git -C $RepoRoot rev-parse "${SourceCommit}:external/wuffs").Trim()
+if ($LASTEXITCODE -ne 0 -or $WuffsCommit -notmatch '^[0-9a-f]{40}$') {
+    throw 'Could not determine the pinned Wuffs gitlink.'
 }
 $PsyCrossRoot = Join-Path $RepoRoot 'external\PsyCross'
 $checkedOutPsyCross = [string](& git -c "safe.directory=$PsyCrossRoot" `
@@ -76,26 +73,16 @@ $checkedOutPsyCross = $checkedOutPsyCross.Trim()
 if ($LASTEXITCODE -ne 0 -or $checkedOutPsyCross -ne $PsyCrossCommit) {
     throw "PsyCross checkout does not match the gitlink $PsyCrossCommit."
 }
+$WuffsRoot = Join-Path $RepoRoot 'external\wuffs'
+$checkedOutWuffs = [string](& git -c "safe.directory=$WuffsRoot" `
+    -C $WuffsRoot rev-parse HEAD)
+$checkedOutWuffs = $checkedOutWuffs.Trim()
+if ($LASTEXITCODE -ne 0 -or $checkedOutWuffs -ne $WuffsCommit) {
+    throw "Wuffs checkout does not match the gitlink $WuffsCommit."
+}
 $sourceEpoch = (& git -C $RepoRoot show -s --format=%ct $SourceCommit).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceEpoch -notmatch '^\d+$') {
     throw 'Could not determine the source timestamp.'
-}
-
-$downloadRoot = Join-Path $RepoRoot 'build\downloads'
-$ffmpegFiles = [ordered]@{
-    "ffmpeg-$FfmpegVersion.tar.xz" = $FfmpegSha256
-    "ffmpeg-$FfmpegVersion.tar.xz.asc" = $FfmpegSignatureSha256
-    'ffmpeg-devel.asc' = $FfmpegKeySha256
-}
-foreach ($item in $ffmpegFiles.GetEnumerator()) {
-    $path = Join-Path $downloadRoot $item.Key
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Verified FFmpeg source input is missing: $path"
-    }
-    $actual = Get-Sha256 $path
-    if ($actual -ne $item.Value) {
-        throw "FFmpeg source input checksum mismatch for $($item.Key): $actual"
-    }
 }
 
 if (-not $OutputPath) {
@@ -112,6 +99,7 @@ $workRoot = Join-Path $RepoRoot 'build\source-bundle'
 $stageRoot = Join-Path $workRoot 'stage'
 $mainZip = Join-Path $workRoot 'stuntmaster.zip'
 $psyCrossZip = Join-Path $workRoot 'psycross.zip'
+$wuffsZip = Join-Path $workRoot 'wuffs.zip'
 Remove-VerifiedTree $workRoot (Join-Path $RepoRoot 'build')
 New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 $bundleRootName = "stuntmaster-pc-$ProjectVersion-source"
@@ -130,14 +118,11 @@ Invoke-Native $git '-c' "safe.directory=$PsyCrossRoot" '-C' $PsyCrossRoot `
     "--prefix=$bundleRootName/external/PsyCross/" `
     "--output=$psyCrossZip" $PsyCrossCommit
 [IO.Compression.ZipFile]::ExtractToDirectory($psyCrossZip, $stageRoot)
-
-$thirdPartyRoot = Join-Path $stageRoot `
-    "$bundleRootName\third_party\ffmpeg"
-New-Item -ItemType Directory -Force -Path $thirdPartyRoot | Out-Null
-foreach ($name in $ffmpegFiles.Keys) {
-    Copy-Item -LiteralPath (Join-Path $downloadRoot $name) `
-        -Destination (Join-Path $thirdPartyRoot $name)
-}
+Invoke-Native $git '-c' "safe.directory=$WuffsRoot" '-C' $WuffsRoot `
+    'archive' '--format=zip' `
+    "--prefix=$bundleRootName/external/wuffs/" `
+    "--output=$wuffsZip" $WuffsCommit
+[IO.Compression.ZipFile]::ExtractToDirectory($wuffsZip, $stageRoot)
 
 $provenance = [ordered]@{
     schema_version = '1'
@@ -145,15 +130,10 @@ $provenance = [ordered]@{
     stuntmaster_commit = $SourceCommit
     psycross_repository = 'https://github.com/neonoxd/PsyCross'
     psycross_commit = $PsyCrossCommit
-    ffmpeg_version = $FfmpegVersion
-    ffmpeg_source_url = "https://ffmpeg.org/releases/ffmpeg-$FfmpegVersion.tar.xz"
-    ffmpeg_source_sha256 = $FfmpegSha256.ToLowerInvariant()
-    ffmpeg_signature_sha256 = $FfmpegSignatureSha256.ToLowerInvariant()
-    ffmpeg_release_key_url = 'https://ffmpeg.org/ffmpeg-devel.asc'
-    ffmpeg_release_key_sha256 = $FfmpegKeySha256.ToLowerInvariant()
-    ffmpeg_release_key_fingerprint = $FfmpegFingerprint
+    wuffs_repository = 'https://github.com/google/wuffs'
+    wuffs_version = '0.3.4'
+    wuffs_commit = $WuffsCommit
     source_date_epoch = $sourceEpoch
-    relinking_instructions = 'docs/FFMPEG_RELINKING.md'
 }
 $provenancePath = Join-Path $stageRoot `
     "$bundleRootName\SOURCE-PROVENANCE.json"

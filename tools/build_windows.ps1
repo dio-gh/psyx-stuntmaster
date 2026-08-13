@@ -4,9 +4,7 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string] $Configuration = 'RelWithDebInfo',
     [switch] $CoreOnly,
-    [switch] $SkipTests,
-    [switch] $DisableFfmpegAssembly,
-    [switch] $ForceFfmpegRebuild
+    [switch] $SkipTests
 )
 
 Set-StrictMode -Version Latest
@@ -30,8 +28,12 @@ $git = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
 if (-not $git) {
     throw 'Git was not found; it is required to derive the reproducible source timestamp.'
 }
-$sourceDateEpoch = (& $git -C $RepoRoot show -s --format=%ct HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $sourceDateEpoch -notmatch '^\d+$') {
+$sourceDateResult = & $git -C $RepoRoot show -s --format=%ct HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not determine SOURCE_DATE_EPOCH from the source commit."
+}
+$sourceDateEpoch = ([string]($sourceDateResult | Select-Object -Last 1)).Trim()
+if ($sourceDateEpoch -notmatch '^\d+$') {
     throw "Could not determine SOURCE_DATE_EPOCH from the source commit."
 }
 $env:SOURCE_DATE_EPOCH = $sourceDateEpoch
@@ -65,18 +67,60 @@ function Find-VisualStudio {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} `
         'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-        throw 'Visual Studio Installer (vswhere.exe) was not found. Install Visual Studio 2022 with the Desktop development with C++ workload.'
+        throw 'Visual Studio Installer (vswhere.exe) was not found. Install Visual Studio with the Desktop development with C++ workload.'
     }
     $result = & $vswhere -latest -products '*' `
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         -property installationPath
     if ($LASTEXITCODE -ne 0 -or -not $result) {
-        throw 'Visual Studio 2022 with the Desktop development with C++ workload was not found.'
+        throw 'Visual Studio with the Desktop development with C++ workload was not found.'
     }
     return ([string]($result | Select-Object -Last 1)).Trim()
 }
 
 $vsRoot = Find-VisualStudio
+$vswhere = Join-Path ${env:ProgramFiles(x86)} `
+    'Microsoft Visual Studio\Installer\vswhere.exe'
+function Get-VisualStudioProperty {
+    param([Parameter(Mandatory = $true)][string] $Name)
+
+    $result = & $vswhere -latest -products '*' `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property $Name
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not query Visual Studio property $Name."
+    }
+    $value = $result | Select-Object -Last 1
+    if ($null -eq $value) {
+        return
+    }
+    return ([string]$value).Trim()
+}
+
+$vsInstallationVersion = Get-VisualStudioProperty 'installationVersion'
+if ($vsInstallationVersion -notmatch '^(\d+)\.') {
+    throw 'Could not determine the installed Visual Studio CMake generator.'
+}
+$vsMajorVersion = $Matches[1]
+$vsReleaseYear = switch ($vsMajorVersion) {
+    '16' { '2019' }
+    '17' { '2022' }
+    '18' { '2026' }
+    default { $null }
+}
+if ([string]::IsNullOrWhiteSpace([string]$vsReleaseYear)) {
+    # Let a future Visual Studio release describe its CMake generator year,
+    # while keeping current generators independent of optional catalog fields.
+    $vsReleaseYear = Get-VisualStudioProperty 'catalog_productLineVersion'
+}
+if ([string]::IsNullOrWhiteSpace([string]$vsReleaseYear)) {
+    $vsReleaseYear = Get-VisualStudioProperty 'catalog_featureReleaseYear'
+}
+if ([string]::IsNullOrWhiteSpace([string]$vsReleaseYear) -or
+        $vsReleaseYear -notmatch '^\d{4}$') {
+    throw 'Could not determine the installed Visual Studio CMake generator.'
+}
+$cmakeGenerator = "Visual Studio $vsMajorVersion $vsReleaseYear"
 $cmake = Join-Path $vsRoot `
     'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 if (-not (Test-Path -LiteralPath $cmake -PathType Leaf)) {
@@ -91,10 +135,17 @@ $configure = @(
     '--fresh',
     '-S', $RepoRoot,
     '-B', $BuildRoot,
-    '-G', 'Visual Studio 17 2022',
+    '-G', $cmakeGenerator,
     '-A', 'x64',
     '-DSTUNTMASTER_BUILD_TESTS=ON'
 )
+
+$wuffsMarker = Join-Path $RepoRoot 'external\wuffs\wuffs-root-directory.txt'
+if (-not (Test-Path -LiteralPath $wuffsMarker -PathType Leaf)) {
+    Write-Host 'Initializing the Wuffs submodule...'
+    Invoke-Native $git '-C' $RepoRoot 'submodule' 'update' '--init' `
+        'external/wuffs'
+}
 
 if ($CoreOnly) {
     $configure += '-DSTUNTMASTER_ENABLE_PSYCROSS=OFF'
@@ -110,29 +161,12 @@ if ($CoreOnly) {
     if (-not (Test-Path -LiteralPath $toolchain -PathType Leaf)) {
         throw 'Visual Studio vcpkg was not found. Add the vcpkg package manager component to Visual Studio.'
     }
-    $ffmpegBuild = Join-Path $PSScriptRoot 'build_ffmpeg_windows.ps1'
-    $ffmpegArguments = @{
-        VisualStudioRoot = $vsRoot
-    }
-    if ($DisableFfmpegAssembly) {
-        $ffmpegArguments['DisableAssembly'] = $true
-    }
-    if ($ForceFfmpegRebuild) {
-        $ffmpegArguments['ForceRebuild'] = $true
-    }
-    & $ffmpegBuild @ffmpegArguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "FFmpeg build failed with exit code $LASTEXITCODE."
-    }
-    $ffmpegRoot = Join-Path $RepoRoot `
-        'build\dependencies\ffmpeg-8.1.2-msvc-x64-static\install'
     $configure += @(
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
         "-DVCPKG_OVERLAY_TRIPLETS=$RepoRoot\triplets",
         '-DVCPKG_TARGET_TRIPLET=x64-windows-static-release',
         '-DVCPKG_MANIFEST_INSTALL=ON',
-        '-DSTUNTMASTER_ENABLE_PSYCROSS=ON',
-        "-DSTUNTMASTER_FFMPEG_ROOT=$ffmpegRoot"
+        '-DSTUNTMASTER_ENABLE_PSYCROSS=ON'
     )
 }
 

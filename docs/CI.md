@@ -20,20 +20,17 @@ The workflow runs for:
 It deliberately does not use `pull_request_target`. Pull-request builds get a
 read-only token, and checkout credentials are not persisted. Concurrent runs
 of the same workflow and Git ref cancel the older run. A failed build, test,
-package check, positive archive-layout inspection, or SBOM generation prevents
-publication. The archive policy permits only the installed executables,
-configuration and project documents, Markdown under `docs/`, and the six
-expected license files. FFmpeg is statically linked; any FFmpeg runtime DLL is
-therefore unexpected.
+package check, positive artifact-layout inspection, or SBOM generation prevents
+publication. The release artifact is the single self-configuring executable;
+the homegrown Wuffs codec library is rebuilt from checked-in generated C.
 
 Every successful run uploads a GitHub Actions artifact named with the project
 version and source commit. It is retained for 30 days and contains the release
-ZIP, its checksum and inventory, the authoritative SPDX JSON, a generated
+executable, its checksum, the authoritative SPDX JSON, a generated
 Markdown SBOM report for human review, and a checksum manifest covering both
 SBOM representations. It also contains a deterministic corresponding-source
 ZIP plus its checksum and exact file inventory. That bundle includes the exact
-application and PsyCross sources, authentic signed FFmpeg source inputs, and
-relinking instructions.
+application, PsyCross, and Wuffs sources.
 
 After a successful branch-push or manual build, a separate Linux job downloads
 that completed artifact, rechecks the exact eight-file allowlist and all checksum
@@ -48,6 +45,24 @@ isolated from the Windows compiler job.
 Pull-request builds deliberately skip attestation. In particular, code from an
 external fork can compile and test with a read-only token but cannot ask the
 repository to make a signed claim about its output.
+
+### Optional retail-disc codec verification
+
+CI cannot redistribute the supported retail image, so exact end-to-end codec
+comparison is an opt-in local gate. After building
+`stuntmaster_str_codec_probe`, provide both the probe and the supported CUE:
+
+```powershell
+tools/verify_disc_codec_reference.ps1 `
+    -CuePath "C:\path\to\Jackie Chan Stuntmaster (USA).cue" `
+    -ProbePath "build\windows-core\RelWithDebInfo\stuntmaster_str_codec_probe.exe"
+```
+
+The verifier runs the public `StrDecoder` path over all nine movies and
+compares every non-comment output line, case-sensitively and field-for-field,
+with `tests/data/ffmpeg-8.1.2-supported-disc-codec-reference.txt`. This includes
+exact floating-point bit patterns and media digests; it applies no numeric or
+visual tolerance. The CUE/BIN and decoded retail data remain outside Git.
 
 `.github/workflows/draft-release.yml` runs only for tag pushes. It does not
 compile the project again. Instead, it finds an unexpired successful Windows
@@ -127,22 +142,10 @@ workflow runs, while vcpkg's own ABI keys decide whether each package can be
 reused. The project itself is always compiled and tested from the checked-out
 source.
 
-FFmpeg has a separate cache because it is built directly rather than through
-vcpkg. Its key covers the `windows-2022` image revision, Visual Studio version,
-NASM version and executable hash, and the complete pinned build script. A cold
-miss builds FFmpeg in its own visible step and immediately saves the verified
-result, even before the application build. A warm hit still verifies the
-official archive signature and every cached install file against its SHA-256
-manifest, then reuses the five static libraries. The three verified upstream
-download inputs have their own immutable hash-keyed cache and are saved as soon
-as source hashes, release-key fingerprint, and detached signature pass. The
-build cache contains only installed headers/libraries/evidence and integrity
-metadata--not FFmpeg's build objects or an extracted source tree.
-
 Cached dependency binaries are build inputs, but they are not release artifacts
 or proof of provenance by themselves. vcpkg accepts an entry only when its ABI
 key matches the current port, triplet, and toolchain configuration; the complete
-application is still linked and tested on every run. Neither cache contains
+application is still linked and tested on every run. The cache contains no
 credentials, project objects, or final artifacts. GitHub
 scopes caches by branch/ref: trusted default-branch caches can be restored by
 later branches and pull requests, while pull-request cache writes cannot
@@ -161,12 +164,10 @@ digest. For the same source, dependency set, and toolchain, independent clean
 runs are therefore expected to produce the same release executable and SBOM
 SHA-256 values.
 
-FFmpeg C objects additionally use `/O2 /Brepro /MT /GL`, while NASM supplies
-its optimized x86 objects. The final application link already has CMake
-interprocedural optimization enabled, so MSVC can optimize across the former
-dynamic-library boundary. FFmpeg uses the pinned source-release timestamp as
-its own `SOURCE_DATE_EPOCH`; the corresponding-source ZIP uses the application
-commit timestamp and a stable sorted-entry writer.
+The checked-in Wuffs-generated C translation units are compiled with the same
+release interprocedural optimization as the rest of the application. The
+corresponding-source ZIP uses the application commit timestamp and a stable
+sorted-entry writer.
 
 `windows-2022` selects a stable runner family but not an immutable Visual Studio
 or Windows SDK image. CI records the runner image, Visual Studio, CMake, and Git
@@ -182,10 +183,10 @@ workflows.
 ## SBOM scope
 
 The authoritative SPDX 2.3 JSON SBOM describes the single published Windows
-executable. It includes that executable with SHA-1 and SHA-256, the exact source
-and PsyCross commits, the authentic FFmpeg 8.1.2 source archive and checksum, and
-every package recorded in the build's vcpkg status database. Static dependencies
--- PsyCross, FFmpeg, and the vcpkg runtime components whose license texts are now
+executable. It includes that executable with SHA-1 and SHA-256, the exact source,
+PsyCross, and Wuffs commits, and every package recorded in the build's vcpkg
+status database. Static dependencies -- PsyCross, Wuffs, and the vcpkg runtime
+components whose license texts are now
 embedded in the executable -- are represented as package relationships
 (`DEPENDS_ON`) rather than as separate shipped files. The analyzed
 `stuntmaster-pc` package is the executable itself, which it `CONTAINS` as its one
@@ -205,11 +206,10 @@ The Windows job captures stable build-environment facts after configuration:
 the GitHub runner image and image revision, architecture, Visual Studio and MSVC
 versions, MSVC toolset and tools version, Windows SDK, CMake version/generator,
 Git version, Release configuration, vcpkg triplet and baseline,
-`SOURCE_DATE_EPOCH`, FFmpeg source/signature/key/configuration identity, NASM
-version, linkage mode, and the active reproducibility options. It also records the
+`SOURCE_DATE_EPOCH`, and the active reproducibility options. It also records the
 exact SHA-256 and Authenticode result for the MSVC compiler, linker, librarian,
-MSBuild, Windows resource and manifest tools, CMake, CTest, vcpkg, Git,
-PowerShell, MSYS2 Bash, GNU Make, NASM, GnuPG/GPGV, curl, tar, and xz. The
+MSBuild, Windows resource and manifest tools, CMake, CTest, vcpkg, Git, and
+PowerShell. The
 Microsoft build and SDK tools must have a valid Microsoft
 publisher signature. Any invalid signature fails the build; tools that are
 legitimately unsigned remain identified by their byte hash and an explicit

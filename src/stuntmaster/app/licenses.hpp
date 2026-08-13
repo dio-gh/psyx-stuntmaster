@@ -8,7 +8,7 @@ namespace stuntmaster::app {
 
 // One license text embedded in the executable's resources.
 struct EmbeddedLicense {
-    std::string name;        // display name, e.g. "FFmpeg (LGPL v2.1)"
+    std::string name;        // display name, e.g. "Wuffs (Apache 2.0)"
     std::string_view text;   // resource bytes; valid for the whole process
 };
 

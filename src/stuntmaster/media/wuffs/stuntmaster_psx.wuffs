@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: MIT
+//
+// This package will hold the supported PlayStation STR, MDEC v2, and
+// stereo 4-bit CD-XA decoding surface. The first checked-in revision keeps a
+// callable ABI marker so the Wuffs-to-C generation and native link path are
+// exercised before codec implementation begins.
+
+pub const CODEC_ABI_VERSION : base.u32 = 1
+
+pub struct build_info?(
+	marker : base.u32,
+)
+
+pub func build_info.codec_abi_version() base.u32 {
+	return CODEC_ABI_VERSION
+}

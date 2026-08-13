@@ -2,3 +2,6 @@
     path = external/PsyCross
     url = https://github.com/neonoxd/PsyCross.git
     branch = stuntmaster
+[submodule "external/wuffs"]
+    path = external/wuffs
+    url = https://github.com/google/wuffs.git

@@ -44,7 +44,7 @@ stuntmaster.exe
     bounded sample ring -> OpenAL or WAV capture
   movies
     caller-gated guest request -> main-thread playback
-    raw ISO extents -> FFmpeg STR/MDEC + XA decode
+    raw ISO extents -> Wuffs-generated STR/MDEC + XA decode
     native RGBA/OpenAL presentation; Start edge skips
 ```
 
@@ -242,10 +242,12 @@ The guest remains responsible for deciding which movie plays and for its own
 pre/post-movie state. The host captures the requested filename at
 `Game::PlayMovie`, then pauses the guest worker only at the verified overlay
 player call. The main thread reads the ISO file's original 2352-byte sectors,
-decodes MDEC video and XA-ADPCM audio through FFmpeg, and presents them through
-the existing window and OpenAL context. A fresh Start press ends playback and
-is masked from guest input until released. Headless runs and decoder failures
-complete the same caller-gated boundary without playback.
+decodes the shipped STR/MDEC v2 video and stereo 4-bit XA-ADPCM audio through
+the project's Wuffs-generated C, and presents them through the existing window
+and OpenAL context. A fresh Start press ends playback and is masked from guest
+input until released. Headless runs and decoder failures complete the same
+caller-gated boundary without playback. See `docs/WUFFS_CODEC_REPLACEMENT.md`
+for the exact supported-disc inventory and validation boundary.
 
 ## CD timing
 

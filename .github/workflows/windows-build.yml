@@ -66,6 +66,11 @@ jobs:
           if ($actualPsyCross -ne $expectedPsyCross) {
             throw "Unexpected PsyCross revision: $actualPsyCross"
           }
+          $expectedWuffs = 'ec71f9c6d829ca763fbbc1f7adecc30a89a8ed0a'
+          $actualWuffs = git rev-parse HEAD:external/wuffs
+          if ($actualWuffs -ne $expectedWuffs) {
+            throw "Unexpected Wuffs revision: $actualWuffs"
+          }
           $cmake = Get-Content -LiteralPath CMakeLists.txt -Raw
           if ($cmake -notmatch 'project\(stuntmaster_pc\s+VERSION\s+([^\s\)]+)') {
             throw 'Could not determine the project version from CMakeLists.txt.'
@@ -84,105 +89,12 @@ jobs:
           path: build/vcpkg-binary-cache
           key: vcpkg-${{ runner.os }}-vs2022-x64-static-release-${{ hashFiles('vcpkg.json', 'triplets/x64-windows-static-release.cmake') }}
 
-      - name: Restore verified FFmpeg source inputs
-        id: ffmpeg_source_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/downloads/ffmpeg-8.1.2.tar.xz
-            build/downloads/ffmpeg-8.1.2.tar.xz.asc
-            build/downloads/ffmpeg-devel.asc
-          key: ffmpeg-source-v1-8.1.2-464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c-0a0963fccd70597838073f3e31b20f4a4d8cc2b5e577472c9a5a1f22624246f8-397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5
-
-      - name: Verify authentic FFmpeg source inputs
-        shell: pwsh
-        run: ./tools/build_ffmpeg_windows.ps1 -VerifySourceOnly
-
-      - name: Save verified FFmpeg source inputs
-        if: steps.ffmpeg_source_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/downloads/ffmpeg-8.1.2.tar.xz
-            build/downloads/ffmpeg-8.1.2.tar.xz.asc
-            build/downloads/ffmpeg-devel.asc
-          key: ffmpeg-source-v1-8.1.2-464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c-0a0963fccd70597838073f3e31b20f4a4d8cc2b5e577472c9a5a1f22624246f8-397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5
-
-      - name: Install and identify FFmpeg build tools
-        id: ffmpeg_toolchain
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pacman = 'C:\msys64\usr\bin\pacman.exe'
-          if (-not (Test-Path -LiteralPath $pacman -PathType Leaf)) {
-            throw 'The windows-2022 MSYS2 installation was not found.'
-          }
-          & $pacman -S --needed --noconfirm nasm tar xz make
-          if ($LASTEXITCODE -ne 0) {
-            throw "MSYS2 build tool installation failed with exit code $LASTEXITCODE."
-          }
-          $nasm = 'C:\msys64\usr\bin\nasm.exe'
-          $nasmVersion = (& $nasm -v).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $nasmVersion) {
-            throw 'Could not identify NASM.'
-          }
-          $nasmHash = (Get-FileHash -LiteralPath $nasm -Algorithm SHA256).Hash.ToLowerInvariant()
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
-            'Microsoft Visual Studio\Installer\vswhere.exe'
-          $visualStudioVersion = ([string](& $vswhere -latest -products '*' `
-            -property installationVersion | Select-Object -Last 1)).Trim()
-          $identityText = @(
-            "ImageVersion=$env:ImageVersion"
-            "VisualStudio=$visualStudioVersion"
-            "NASM=$nasmVersion"
-            "NASM_SHA256=$nasmHash"
-          ) -join "`n"
-          $algorithm = [Security.Cryptography.SHA256]::Create()
-          try {
-            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($identityText)
-            $identity = ([BitConverter]::ToString(
-              $algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-          } finally {
-            $algorithm.Dispose()
-          }
-          "cache_identity=$identity" >> $env:GITHUB_OUTPUT
-          Write-Host $identityText
-          Write-Host "FFmpeg toolchain cache identity: $identity"
-
-      - name: Restore verified FFmpeg build cache
-        id: ffmpeg_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/dependencies/ffmpeg-8.1.2-msvc-x64-static/install
-            build/dependencies/ffmpeg-8.1.2-msvc-x64-static/build-metadata.json
-            build/dependencies/ffmpeg-8.1.2-msvc-x64-static/install-manifest.json
-          key: ffmpeg-v1-${{ runner.os }}-${{ steps.ffmpeg_toolchain.outputs.cache_identity }}-${{ hashFiles('tools/build_ffmpeg_windows.ps1') }}
-
-      - name: Build and verify minimal static FFmpeg
+      - name: Verify generated Wuffs C
         shell: pwsh
         timeout-minutes: 10
         run: |
           $ErrorActionPreference = 'Stop'
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
-            'Microsoft Visual Studio\Installer\vswhere.exe'
-          $visualStudioRoot = ([string](& $vswhere -latest -products '*' `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath | Select-Object -Last 1)).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $visualStudioRoot) {
-            throw 'Visual Studio with the C++ toolchain was not found.'
-          }
-          ./tools/build_ffmpeg_windows.ps1 -VisualStudioRoot $visualStudioRoot
-
-      - name: Save verified FFmpeg build cache
-        if: steps.ffmpeg_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/dependencies/ffmpeg-8.1.2-msvc-x64-static/install
-            build/dependencies/ffmpeg-8.1.2-msvc-x64-static/build-metadata.json
-            build/dependencies/ffmpeg-8.1.2-msvc-x64-static/install-manifest.json
-          key: ffmpeg-v1-${{ runner.os }}-${{ steps.ffmpeg_toolchain.outputs.cache_identity }}-${{ hashFiles('tools/build_ffmpeg_windows.ps1') }}
+          ./tools/generate_wuffs_codecs.ps1 -Check
 
       - name: Build, test, and package Release
         shell: pwsh
@@ -319,7 +231,7 @@ jobs:
             -replace '^cmake version\s+', '').Trim()
           $gitVersion = ((git --version) -replace '^git version\s+', '').Trim()
           $vswhere = Join-Path ${env:ProgramFiles(x86)} `
-            'Microsoft Visual Studio/Installer/vswhere.exe'
+            'Microsoft Visual Studio\Installer\vswhere.exe'
           $visualStudioVersion = ([string](& $vswhere -latest -products '*' `
             -property installationVersion | Select-Object -Last 1)).Trim()
           if (-not $visualStudioVersion) {
@@ -330,32 +242,12 @@ jobs:
             throw 'Could not determine SOURCE_DATE_EPOCH.'
           }
           $manifest = Get-Content -LiteralPath vcpkg.json -Raw | ConvertFrom-Json
-          $ffmpegMetadata = Get-Content -LiteralPath `
-            'build/dependencies/ffmpeg-8.1.2-msvc-x64-static/build-metadata.json' `
-            -Raw | ConvertFrom-Json
-          if ($ffmpegMetadata.schema_version -ne '1' -or
-              $ffmpegMetadata.build_recipe_version -ne '4' -or
-              $ffmpegMetadata.ffmpeg_version -ne '8.1.2') {
-            throw 'Unexpected FFmpeg build metadata.'
-          }
-          $nasmVersion = (& 'C:\msys64\usr\bin\nasm.exe' -v).Trim()
           $windowsSdkVersion = Get-UniqueProjectValue 'WindowsTargetPlatformVersion' `
             -ProjectFilter 'stuntmaster.vcxproj'
           $sdkBin = Join-Path ${env:ProgramFiles(x86)} `
             "Windows Kits\10\bin\$windowsSdkVersion\x64"
           $resourceCompiler = Join-Path $sdkBin 'rc.exe'
           $dependencyInspector = Join-Path $compilerDirectory 'dumpbin.exe'
-          $stuntmasterExecutable = 'build/windows/Release/stuntmaster.exe'
-          $dependencies = @(& $dependencyInspector /dependents $stuntmasterExecutable)
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Could not inspect the final executable dependency table.'
-          }
-          $unexpectedFfmpegImport = @($dependencies | Where-Object {
-            $_ -match '(?i)\b(avcodec|avformat|avutil|swresample|swscale)-[0-9]+\.dll\b'
-          })
-          if ($unexpectedFfmpegImport.Count -ne 0) {
-            throw "Final executable still imports FFmpeg DLLs: $($unexpectedFfmpegImport -join ', ')"
-          }
           $msbuildMetadata = `
             'build/windows/CMakeFiles/StuntmasterMSBuildCommand.txt'
           if (-not (Test-Path -LiteralPath $msbuildMetadata -PathType Leaf)) {
@@ -368,9 +260,6 @@ jobs:
           $vcpkg = Join-Path $visualStudioRoot 'VC\vcpkg\vcpkg.exe'
           $cmakeBin = Split-Path -Parent $cmakeCommand
           $git = (Get-Command git.exe -ErrorAction Stop).Source
-          $gitRoot = Split-Path -Parent (Split-Path -Parent $git)
-          $gpg = Join-Path $gitRoot 'usr\bin\gpg.exe'
-          $gpgv = Join-Path $gitRoot 'usr\bin\gpgv.exe'
           $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
           $toolchainTools = @(
             Get-ToolEvidence 'MSVC C/C++ compiler' $compilerPath -RequireMicrosoftSignature
@@ -385,14 +274,6 @@ jobs:
             Get-ToolEvidence 'vcpkg' $vcpkg
             Get-ToolEvidence 'Git' $git
             Get-ToolEvidence 'PowerShell' $pwsh
-            Get-ToolEvidence 'MSYS2 Bash' 'C:\msys64\usr\bin\bash.exe'
-            Get-ToolEvidence 'GNU Make' 'C:\msys64\usr\bin\make.exe'
-            Get-ToolEvidence 'NASM' 'C:\msys64\usr\bin\nasm.exe'
-            Get-ToolEvidence 'GnuPG' $gpg
-            Get-ToolEvidence 'GPG verifier' $gpgv
-            Get-ToolEvidence 'curl' ((Get-Command curl.exe -ErrorAction Stop).Source)
-            Get-ToolEvidence 'MSYS2 GNU tar' 'C:\msys64\usr\bin\tar.exe'
-            Get-ToolEvidence 'XZ Utils' 'C:\msys64\usr\bin\xz.exe'
           )
           $toolchainJson = $toolchainTools | ConvertTo-Json -Depth 6 -Compress
           $toolchainDigest = Get-Sha256String $toolchainJson
@@ -417,16 +298,7 @@ jobs:
             vcpkg_triplet = 'x64-windows-static-release'
             vcpkg_builtin_baseline = [string]$manifest.'builtin-baseline'
             source_date_epoch = $sourceDateEpoch
-            ffmpeg_version = [string]$ffmpegMetadata.ffmpeg_version
-            ffmpeg_source_url = [string]$ffmpegMetadata.source_url
-            ffmpeg_source_sha256 = [string]$ffmpegMetadata.source_sha256
-            ffmpeg_signature_sha256 = [string]$ffmpegMetadata.signature_sha256
-            ffmpeg_release_key_fingerprint = [string]$ffmpegMetadata.release_key_fingerprint
-            ffmpeg_configuration_id = [string]$ffmpegMetadata.configuration_id
-            ffmpeg_linkage = 'static'
-            ffmpeg_configure_options = @($ffmpegMetadata.configure_options)
-            nasm_version = $nasmVersion
-            reproducibility_options = 'MSVC /Brepro and project IPO; FFmpeg /O2 /Brepro /MT /GL; commit-derived ZIP timestamps and SBOM creation time'
+            reproducibility_options = 'MSVC /Brepro and project IPO; checked-in Wuffs-generated C; commit-derived ZIP timestamps and SBOM creation time'
             toolchain_digest_algorithm = 'SHA256'
             toolchain_digest_format = 'UTF-8 compact JSON toolchain_tools array in listed and property order'
             toolchain_digest = $toolchainDigest
@@ -482,18 +354,20 @@ jobs:
               '{0,12}  {1}' -f $_.Length, $_.FullName
             } | Tee-Object -FilePath $sourceContentsPath
             $sourceRoot = "stuntmaster-pc-$($match.Groups['version'].Value)-source/"
-            $mainFiles = @(git ls-tree -r --name-only $env:GITHUB_SHA |
-              Where-Object { $_ -ne 'external/PsyCross' } | ForEach-Object {
+            $mainFiles = @(git -c core.quotePath=false ls-tree -r --name-only $env:GITHUB_SHA |
+              Where-Object {
+                $_ -notin @('external/PsyCross', 'external/wuffs')
+              } | ForEach-Object {
                 "$sourceRoot$_"
               })
-            $psyCrossFiles = @(git -C external/PsyCross ls-tree -r --name-only HEAD |
+            $psyCrossFiles = @(git -c core.quotePath=false -C external/PsyCross ls-tree -r --name-only HEAD |
               ForEach-Object { "${sourceRoot}external/PsyCross/$_" })
+            $wuffsFiles = @(git -c core.quotePath=false -C external/wuffs ls-tree -r --name-only HEAD |
+              ForEach-Object { "${sourceRoot}external/wuffs/$_" })
             $expectedSourceFiles = @(
               $mainFiles
               $psyCrossFiles
-              "${sourceRoot}third_party/ffmpeg/ffmpeg-8.1.2.tar.xz"
-              "${sourceRoot}third_party/ffmpeg/ffmpeg-8.1.2.tar.xz.asc"
-              "${sourceRoot}third_party/ffmpeg/ffmpeg-devel.asc"
+              $wuffsFiles
               "${sourceRoot}SOURCE-PROVENANCE.json"
             ) | Sort-Object
             $actualSourceFiles = @($sourceEntries.FullName | Sort-Object)
