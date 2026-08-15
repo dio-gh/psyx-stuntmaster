@@ -2254,6 +2254,14 @@ camera-relative, character-relative, target-release, no-target, and stock
 branches with architectural R3000A load delays; this caught and corrected an
 initial unscheduled-load draft before live use.
 
+Live validation rejected both movement policies as final designs: universal
+Strafe changes locomotion and interaction semantics, while character-relative
+Run causes severe motion discomfort. The exhaustive consumer and ownership
+inventory is recorded in [MOUSE_HEADING_AUDIT.md](MOUSE_HEADING_AUDIT.md).
+That audit is the design boundary for the replacement dual-heading work; the
+implementation described above remains useful prototype evidence, not the
+shipping movement architecture.
+
 Use the committed disassembler for focused verification:
 
 ```powershell
