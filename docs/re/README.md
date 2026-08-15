@@ -2223,8 +2223,13 @@ Mouse input is gated on `gsPlayState` (`0x80029C6C`), a valid `thePlayer`
 therefore absent from pause (`gsMenuState`, `0x80029EF8`), the front end,
 movies, loads, NIS control, invalid object transitions, and photo mode.
 
-Retail's digital pad reader ignores `padZero+4`; the host publishes desired
-yaw there and a mode byte at `padZero+8`. A reversible trampoline displaces the
+Retail's own stick mapping computes
+`cameraYaw - rmATan216(x, -y) + 0x4000`, equivalently
+`cameraYaw + atan2(x, -y)`. Gameplay mouse orientation uses that same two-axis
+screen convention; integrating horizontal deltas as yaw was rejected because
+a closed circular gesture cancels instead of describing a turn. Retail's
+digital pad reader ignores `padZero+4`; the host publishes the resulting yaw
+there and a mode byte at `padZero+8`. A reversible trampoline displaces the
 final `jal RequestAction` at `0x80075398`, after retail has already computed
 its camera-relative `faceAngle`. Camera-relative mode stores mouse yaw in
 `Player+0x2c`, preserves that travel angle, and maps ordinary Run action 2 to

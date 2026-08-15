@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <limits>
+#include <numbers>
 #include <string>
 
 namespace stuntmaster::game {
@@ -21,6 +23,9 @@ constexpr std::uint32_t player_orientation_y_offset = 0x2CU;
 constexpr std::uint32_t player_behaviour_offset = 0x1B8U;
 constexpr std::uint32_t behaviour_handler_offset = 0xE0U;
 constexpr std::uint32_t player_user_control_handler = 0x80074F5CU;
+constexpr std::uint32_t camera_address = 0x800DD734U;
+constexpr std::uint32_t camera_orientation_y_offset = 0x2CU;
+constexpr double angle_turn = 65'536.0;
 
 constexpr std::uint32_t action_site = 0x80075398U;
 constexpr std::uint32_t action_arena =
@@ -216,6 +221,7 @@ std::optional<MouseGameplayContext> readMouseGameplayContext(
     std::uint32_t behaviour = 0U;
     std::uint32_t control_handler = 0U;
     std::uint32_t input = 0U;
+    std::uint32_t camera = 0U;
     MouseGameplayContext result{};
     if (!runtime.read32(game_manager_address, game) ||
         !validGuestPointer(game) ||
@@ -228,6 +234,9 @@ std::optional<MouseGameplayContext> readMouseGameplayContext(
             behaviour + behaviour_handler_offset, control_handler) ||
         control_handler != player_user_control_handler ||
         !runtime.read32(player + player_orientation_y_offset, result.player_yaw) ||
+        !runtime.read32(camera_address, camera) || !validGuestPointer(camera) ||
+        !runtime.read32(
+            camera + camera_orientation_y_offset, result.camera_yaw) ||
         !runtime.read32(input_manager_address, input) ||
         !validGuestPointer(input)) {
         return std::nullopt;
@@ -302,7 +311,7 @@ MouseMovementMode MouseYawController::cycleMode() noexcept {
 void MouseYawController::update(
     const std::optional<MouseGameplayContext>& context,
     std::int32_t mouse_x,
-    std::int32_t sensitivity) noexcept {
+    std::int32_t mouse_y) noexcept {
     if (mode_ == MouseMovementMode::off || !context) {
         synchronized_ = false;
         return;
@@ -311,8 +320,21 @@ void MouseYawController::update(
         yaw_ = context->player_yaw;
         synchronized_ = true;
     }
-    yaw_ += static_cast<std::uint32_t>(
-        static_cast<std::int64_t>(mouse_x) * sensitivity);
+    if (mouse_x == 0 && mouse_y == 0) {
+        return;
+    }
+    // Retail maps its two-axis movement vector with:
+    //   cameraYaw - rmATan216(x, -y) + 0x4000
+    // which is equivalently cameraYaw + atan2(x, -y). Use the same screen
+    // convention for mouse direction: up follows camera-forward, then right,
+    // down, and left advance by quarter turns. A circular gesture therefore
+    // describes a full turn instead of cancelling its horizontal deltas.
+    const auto radians = std::atan2(
+        static_cast<double>(mouse_x),
+        -static_cast<double>(mouse_y));
+    const auto offset = static_cast<std::int32_t>(std::llround(
+        radians * angle_turn / (2.0 * std::numbers::pi)));
+    yaw_ = context->camera_yaw + static_cast<std::uint32_t>(offset);
 }
 
 std::optional<MouseButton> parseMouseButton(std::string_view value) noexcept {

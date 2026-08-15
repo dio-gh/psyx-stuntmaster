@@ -46,8 +46,6 @@ enum class PrimaryAction : std::uint8_t {
 };
 
 inline constexpr std::size_t primary_action_count = 8U;
-inline constexpr std::int32_t default_mouse_yaw_units_per_pixel = 20;
-
 struct MouseControlConfig {
     std::array<MouseButton, primary_action_count> actions{
         MouseButton::none,  // status
@@ -60,12 +58,12 @@ struct MouseControlConfig {
         MouseButton::left,  // punch
     };
     MouseMovementMode initial_mode{MouseMovementMode::camera_relative};
-    std::int32_t yaw_units_per_pixel{default_mouse_yaw_units_per_pixel};
 };
 
 struct MouseGameplayContext {
     std::uint32_t player{};
     std::uint32_t player_yaw{};
+    std::uint32_t camera_yaw{};
     std::array<std::uint8_t, primary_action_count> physical_to_logical{};
 };
 
@@ -89,7 +87,7 @@ public:
     void update(
         const std::optional<MouseGameplayContext>& context,
         std::int32_t mouse_x,
-        std::int32_t sensitivity = default_mouse_yaw_units_per_pixel) noexcept;
+        std::int32_t mouse_y) noexcept;
     void abandon() noexcept { synchronized_ = false; }
     [[nodiscard]] bool accepted() const noexcept {
         return synchronized_ && mode_ != MouseMovementMode::off;

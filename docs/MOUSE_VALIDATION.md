@@ -19,7 +19,9 @@ Use this short pass:
 1. On the title and front-end screens, confirm the mouse is not captured and
    left/right click do not navigate or activate menu rows.
 2. Enter the first playable level. Confirm capture begins without an initial
-   facing snap, horizontal movement turns Jackie, left click punches, and
+   facing snap. Moving the mouse up/right/down/left should face Jackie in the
+   corresponding camera-relative direction; a circular gesture should produce
+   one complete turn. Confirm left click punches and
    right click kicks.
 3. Hold movement directions while turning. In the default camera-relative
    mode, W/A/S/D should retain the fixed camera's directions while Jackie uses
@@ -47,7 +49,6 @@ Useful A/B configuration:
 
 ```ini
 mouse.movement_mode=camera_relative
-mouse.sensitivity=20
 mouse.punch=Left
 mouse.kick=Right
 mouse.grab=Middle

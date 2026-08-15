@@ -68,13 +68,24 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     stuntmaster::game::MouseYawController yaw;
     stuntmaster::game::MouseGameplayContext context{};
     context.player_yaw = 0xFFF0U;
-    yaw.update(context, 2, 20);
+    context.camera_yaw = 0x1000U;
+    yaw.update(context, 0, 0);
     assert(yaw.accepted());
-    assert(yaw.desiredYaw() == 0x10018U);
+    assert(yaw.desiredYaw() == 0xFFF0U); // entry synchronizes without a snap
+    yaw.update(context, 0, -10);
+    assert(yaw.desiredYaw() == 0x1000U); // up: camera-forward
+    yaw.update(context, 10, 0);
+    assert(yaw.desiredYaw() == 0x5000U); // right: +quarter turn
+    yaw.update(context, 0, 10);
+    assert(yaw.desiredYaw() == 0x9000U); // down: +half turn
+    yaw.update(context, -10, 0);
+    assert(yaw.desiredYaw() == 0xFFFFD000U); // left: -quarter turn
+    yaw.update(context, 0, -10);
+    assert(yaw.desiredYaw() == 0x1000U); // circular sequence completes 360
     assert(yaw.cycleMode() == MouseMovementMode::character_relative);
     assert(!yaw.accepted());
-    yaw.update(context, -1, 20);
-    assert(yaw.desiredYaw() == 0xFFDCU);
+    yaw.update(context, 0, 0);
+    assert(yaw.desiredYaw() == 0xFFF0U);
     yaw.update(std::nullopt, 100, 20);
     assert(!yaw.accepted());
 
@@ -83,12 +94,15 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     constexpr std::uint32_t player = 0x80120000U;
     constexpr std::uint32_t behaviour = 0x80121000U;
     constexpr std::uint32_t input = 0x80130000U;
+    constexpr std::uint32_t camera = 0x80140000U;
     assert(runtime.write32(0x800DD668U, game));
     assert(runtime.write32(game + 0x1CU, 0x80029C6CU));
     assert(runtime.write32(0x800DD6B4U, player));
     assert(runtime.write32(player + 0x1B8U, behaviour));
     assert(runtime.write32(behaviour + 0xE0U, 0x80074F5CU));
     assert(runtime.write32(player + 0x2CU, 0x12345678U));
+    assert(runtime.write32(0x800DD734U, camera));
+    assert(runtime.write32(camera + 0x2CU, 0x87654321U));
     assert(runtime.write32(0x800DD69CU, input));
     for (std::size_t index = 0U; index < identity.size(); ++index) {
         assert(runtime.write8(
@@ -98,6 +112,7 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     const auto live = stuntmaster::game::readMouseGameplayContext(runtime);
     assert(live && live->player == player &&
            live->player_yaw == 0x12345678U &&
+           live->camera_yaw == 0x87654321U &&
            live->physical_to_logical == identity);
     assert(!stuntmaster::game::readMouseGameplayContext(runtime, true));
     assert(runtime.write32(behaviour + 0xE0U, 0x80000000U));
@@ -187,7 +202,6 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
 
     // Character-relative mode rotates the camera-derived movement direction
     // by the mouse/player yaw delta without changing the retail action.
-    constexpr std::uint32_t camera = 0x80140000U;
     assert(runtime.write8(0x800DFA38U, 2U));
     assert(runtime.write32(0x800DFA34U, 0x2000U));
     assert(runtime.write32(0x800DD734U, camera));

@@ -72,8 +72,9 @@ The default keyboard bindings are:
 | Start | Return |
 | Select | Escape |
 
-During gameplay, left click punches, right click kicks, and horizontal mouse
-movement turns Jackie. Movement remains camera-relative by default while using
+During gameplay, left click punches, right click kicks, and two-axis mouse
+movement supplies Jackie's camera-relative facing direction. Movement remains
+camera-relative by default while using
 the retail directional-strafe animations; `F10` cycles a character-relative
 fallback and stock/off mode. Mouse actions are semantic and remappable, so
 retail controller layouts and combat combinations remain authoritative, and

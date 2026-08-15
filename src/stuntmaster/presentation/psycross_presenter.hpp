@@ -33,6 +33,7 @@ struct MouseControlInput {
     std::uint8_t held_actions{};
     std::uint8_t pressed_actions{};
     std::int32_t mouse_x{};
+    std::int32_t mouse_y{};
 };
 
 // Presentation adapter for captured retail GPU state. It is built only when
@@ -62,9 +63,10 @@ public:
     [[nodiscard]] std::uint16_t pollPadOneButtons();
     [[nodiscard]] MouseControlInput takeMouseControlInput() noexcept {
         const MouseControlInput input{
-            mouse_held_actions_, mouse_pressed_actions_, mouse_x_};
+            mouse_held_actions_, mouse_pressed_actions_, mouse_x_, mouse_y_};
         mouse_pressed_actions_ = 0U;
         mouse_x_ = 0;
+        mouse_y_ = 0;
         return input;
     }
     [[nodiscard]] bool takeMouseModeCycleRequest() noexcept {
@@ -364,6 +366,7 @@ private:
     std::uint8_t mouse_held_actions_{};
     std::uint8_t mouse_pressed_actions_{};
     std::int32_t mouse_x_{};
+    std::int32_t mouse_y_{};
     std::atomic<unsigned int> mouse_button_press_latch_{};
     bool mouse_event_watch_installed_{};
     std::uint8_t free_camera_movement_{};

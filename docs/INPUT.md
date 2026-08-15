@@ -70,16 +70,16 @@ face-button presses in the title, menus, pause screen, movies, loads,
 cutscenes, or photo mode. Keyboard and gamepad bindings remain active and may
 be combined with mouse actions normally.
 
-Horizontal movement turns the character. The initial behavior and sensitivity
-are configurable:
+Two-axis mouse movement supplies a camera-relative facing direction. Moving up,
+right, down, and left faces camera-forward, right, back, and left; a circular
+gesture therefore describes a complete turn. Stopping the mouse retains the
+last direction. The initial movement behavior is configurable:
 
 ```ini
 mouse.movement_mode=camera_relative
-mouse.sensitivity=20
 ```
 
-Sensitivity is positive guest angle units per horizontal pixel; 65,536 units
-make one full turn. `F10` cycles these modes at runtime:
+`F10` cycles these modes at runtime:
 
 - `camera_relative`: W/A/S/D retain the fixed camera's movement directions
   while mouse yaw independently controls facing. Ordinary Run uses retail's
@@ -92,8 +92,10 @@ make one full turn. `F10` cycles these modes at runtime:
 Both mouse-facing modes suppress retail strafe's automatic foe acquisition and
 release an existing strafe target through retail's own target API. Explicit
 attacks, countering, and the game's other combat logic remain unchanged.
-Vertical mouse motion is intentionally unused because the gameplay camera is
-fixed. Cursor capture begins only after the guest confirms steady
+The legacy `mouse.sensitivity` setting from the first experimental build is
+still accepted so an existing `input.ini` starts normally, but directional
+orientation discards motion magnitude and does not use it. Cursor capture
+begins only after the guest confirms steady
 `PlayerUserControl` with window focus, and is released on pause, loss of
 control/focus, movies, loads, photo mode, and `off` mode.
 

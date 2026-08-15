@@ -215,6 +215,9 @@ void applyInputConfig(
             matched = true;
         }
         if (!matched && key == "mouse.sensitivity") {
+            // Accepted for compatibility with input.ini files seeded by the
+            // first mouse-control build. Directional two-axis orientation has
+            // no scalar sensitivity: magnitude is discarded after atan2.
             std::int32_t parsed = 0;
             const auto result = std::from_chars(
                 value.data(), value.data() + value.size(), parsed);
@@ -225,7 +228,6 @@ void applyInputConfig(
                     "invalid mouse sensitivity on line " +
                     std::to_string(line_number)};
             }
-            mouse_config.yaw_units_per_pixel = parsed;
             matched = true;
         }
         if (!matched) {
@@ -925,9 +927,10 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         free_camera_controller_look_y_ = look[1];
     } else if (mouse_gameplay_accepted_ && relative_mouse_active_) {
         int mouse_x = 0;
-        int ignored_y = 0;
-        (void)SDL_GetRelativeMouseState(&mouse_x, &ignored_y);
+        int mouse_y = 0;
+        (void)SDL_GetRelativeMouseState(&mouse_x, &mouse_y);
         mouse_x_ += mouse_x;
+        mouse_y_ += mouse_y;
     }
     const auto held_mouse_buttons = SDL_GetMouseState(nullptr, nullptr);
     const auto pressed_mouse_buttons = mouse_button_press_latch_.exchange(
@@ -961,6 +964,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     } else {
         mouse_pressed_actions_ = 0U;
         mouse_x_ = 0;
+        mouse_y_ = 0;
     }
     debug_overlay_visible_ = debug_overlay_toggle_.update(
         debug_overlay_.enabled,
@@ -986,6 +990,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         mouse_held_actions_ = 0U;
         mouse_pressed_actions_ = 0U;
         mouse_x_ = 0;
+        mouse_y_ = 0;
         previous_trace_buttons_ = 0xFFFFU;
         return 0xFFFFU;
     }
@@ -1104,6 +1109,7 @@ void PsyCrossPresenter::setMouseGameplayAccepted(bool accepted) noexcept {
     mouse_held_actions_ = 0U;
     mouse_pressed_actions_ = 0U;
     mouse_x_ = 0;
+    mouse_y_ = 0;
     updateRelativeMouseMode();
 }
 

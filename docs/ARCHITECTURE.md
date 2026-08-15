@@ -67,14 +67,16 @@ The main thread owns SDL, OpenGL/PsyCross, and OpenAL servicing. It may discard
 obsolete frames or missed presentation slots; it may not skip guest ticks.
 
 Gameplay mouse input follows the same ownership boundary. PsyCross reports
-held buttons, latched down edges, and relative horizontal motion; the worker
+held buttons, latched down edges, and relative two-axis motion; the worker
 accepts them only for the exact `gsPlayState`/`PlayerUserControl` object graph.
 Semantic action bits are translated through InputManager's live
 physical-to-logical layout before they are ANDed into the active-low PAD word,
 so retail controller layouts, button modes, hold durations, and command-table
 combinations remain authoritative. Invalid layouts fail closed.
 
-Mouse yaw and its movement mode occupy bytes 4-8 of retail's 34-byte direct-pad
+Mouse direction is converted with retail's fixed-camera convention,
+`cameraYaw + atan2(mouseX, -mouseY)`. The resulting yaw and movement mode occupy
+bytes 4-8 of retail's 34-byte direct-pad
 buffer, which the digital `0x41` driver ignores. Two reversible, surrounding-
 window-fingerprinted guest trampolines consume them: PlayerUserControl's final
 `RequestAction` call applies orientation and either camera-relative authored

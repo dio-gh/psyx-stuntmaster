@@ -1081,6 +1081,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             std::atomic<std::uint8_t> latest_mouse_held_actions{};
             std::atomic<std::uint8_t> latched_mouse_pressed_actions{};
             std::atomic<std::int32_t> gameplay_mouse_x{};
+            std::atomic<std::int32_t> gameplay_mouse_y{};
             std::atomic<bool> mouse_mode_cycle_requested{};
             std::atomic<bool> published_mouse_gameplay_accepted{};
             std::atomic<bool> presenter_mouse_input_active{};
@@ -1845,7 +1846,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 mouse_yaw.update(
                     mouse_gameplay_context,
                     gameplay_mouse_x.exchange(0, std::memory_order_acq_rel),
-                    mouse_config.yaw_units_per_pixel);
+                    gameplay_mouse_y.exchange(0, std::memory_order_acq_rel));
                 const auto mouse_accepted = mouse_yaw.accepted();
                 if (!mouse_accepted) {
                     mouse_gameplay_context.reset();
@@ -3639,6 +3640,9 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                             std::memory_order_release);
                         gameplay_mouse_x.fetch_add(
                             mouse_input.mouse_x,
+                            std::memory_order_release);
+                        gameplay_mouse_y.fetch_add(
+                            mouse_input.mouse_y,
                             std::memory_order_release);
                         presenter_mouse_input_active.store(
                             mouse_input_accepted &&
