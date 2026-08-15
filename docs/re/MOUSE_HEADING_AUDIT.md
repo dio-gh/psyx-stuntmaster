@@ -143,10 +143,14 @@ without the input hook overwriting them each tick.
 | Slopes/table roll | `_SlopeSlide` `0x8003389C`, `_TableRoll` `0x80033DF8` mix body and travel angles | Surface/action-owned heading |
 | Dive roll/hotfoot | `_DiveRoll` `0x80066E3C`, `_Hotfoot` `0x80067F54` apply force along body yaw | Action-entry travel heading |
 
-`COLMGR.CPP` also uses body yaw for climb offsets and camera look-ahead edge
-tests. `Obstacle::LedgeCheck` tests whether the humanoid is facing the obstacle
-front using body yaw. These are why merely preserving action 2 fixed the bounce
-blocker but cannot make a permanently mouse-owned `orientation.y` safe.
+`COLMGR.CPP` uses body yaw for climb offsets. The exact executable corrects an
+important ambiguity in ReChan here: the Player camera look-ahead at
+`0x800A8B48`/`0x800A8B60` loads `Player+0x114` (`faceAngle`), not
+`orientation.y`, before its two `rmSin16` calls. Retail already routes that
+locomotion-only consumer through travel direction. `Obstacle::LedgeCheck`
+tests whether the humanoid is visibly facing the obstacle front using body
+yaw. These are why merely preserving action 2 fixed the bounce blocker but
+cannot make an unowned per-tick write to `orientation.y` safe.
 
 ## Interactions and carried objects
 

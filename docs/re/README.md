@@ -2258,9 +2258,13 @@ Live validation rejected both movement policies as final designs: universal
 Strafe changes locomotion and interaction semantics, while character-relative
 Run causes severe motion discomfort. The exhaustive consumer and ownership
 inventory is recorded in [MOUSE_HEADING_AUDIT.md](MOUSE_HEADING_AUDIT.md).
-That audit is the design boundary for the replacement dual-heading work; the
-implementation described above remains useful prototype evidence, not the
-shipping movement architecture.
+The proven replacement architecture is in
+[MOUSE_DUAL_HEADING_DESIGN.md](MOUSE_DUAL_HEADING_DESIGN.md). It keeps
+camera-relative Run and Move, gives ordinary Stand/Run a scoped mouse-facing
+lease, normalizes context ownership at Player action transitions, and reuses
+directional Strafe animations without entering Strafe state. The implementation
+described above remains useful prototype evidence, not the shipping movement
+architecture.
 
 Use the committed disassembler for focused verification:
 
