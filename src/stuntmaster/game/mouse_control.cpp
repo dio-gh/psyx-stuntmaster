@@ -63,9 +63,12 @@ constexpr std::array<std::uint32_t, 8U> target_window{
 // PlayerUserControl has already placed the Player in a0 and the requested
 // retail action in a1 (the original delay slot at the patch site). Mode 1
 // preserves the camera-relative travel angle but substitutes retail's strafe
-// action for Run; mode 2 rotates the travel vector from camera space into the
-// new character basis. Non-movement actions and idle movement face the mouse.
-constexpr std::array<std::uint32_t, 59U> action_body{
+// action for Run only in the ordinary Stand/Run/Strafe locomotion states.
+// Special handlers (launcher flips, falls, pushes, ladders, and so on) consume
+// the original Move bit for their contextual movement and must retain it.
+// Mode 2 rotates the travel vector from camera space into the new character
+// basis. Non-movement actions and idle movement face the mouse.
+constexpr std::array<std::uint32_t, 68U> action_body{
     0x3C08800EU, // lui t0,0x800e
     0x9108FA38U, // lbu t0,-0x5c8(t0): mouse mode
     0x00000000U, // R3000A load delay
@@ -73,9 +76,9 @@ constexpr std::array<std::uint32_t, 59U> action_body{
     0x11600006U, // beq t3,zero,mode_camera
     0x00000000U,
     0x250BFFFEU, // addiu t3,t0,-2
-    0x11600017U, // beq t3,zero,mode_character
+    0x11600020U, // beq t3,zero,mode_character
     0x00000000U,
-    encodeJump(action_arena + 57U * 4U),
+    encodeJump(action_arena + 66U * 4U),
     0x00000000U,
     // mode_camera
     0x3C09800EU, // lui t1,0x800e
@@ -84,19 +87,28 @@ constexpr std::array<std::uint32_t, 59U> action_body{
     0xAC89002CU, // sw t1,0x2c(a0): orientation.y
     0x8C8A00D0U, // lw t2,0xd0(a0): moveSpeed
     0x00000000U, // R3000A load delay
-    0x11400026U, // beq t2,zero,set_face
+    0x1140002FU, // beq t2,zero,set_face
     0x00000000U,
     0x3C0B0009U,
     0x356B80DCU, // t3 = movement-action mask
     0x00AB5806U, // srlv t3,t3,a1
     0x316B0001U,
-    0x11600020U, // beq t3,zero,set_face
+    0x11600029U, // beq t3,zero,set_face
     0x00000000U,
     0x24ABFFFEU, // addiu t3,a1,-2 (Run)
-    0x1560001EU, // bne t3,zero,call
+    0x15600027U, // bne t3,zero,call
+    0x00000000U,
+    0x8C8B0164U, // lw t3,0x164(a0): current actionState
+    0x00000000U, // R3000A load delay
+    0x256AFFFFU, // addiu t2,t3,-1 (Stand)
+    0x11400005U, // beq t2,zero,use_strafe
+    0x00000000U,
+    0x256AFFF6U, // addiu t2,t3,-10 (Run)
+    0x2D4A0002U, // sltiu t2,t2,2 (Run or Strafe)
+    0x1140001EU, // beq t2,zero,call (preserve contextual Move)
     0x00000000U,
     0x24050006U, // addiu a1,zero,6 (Strafe)
-    encodeJump(action_arena + 57U * 4U),
+    encodeJump(action_arena + 66U * 4U),
     0x00000000U,
     // mode_character
     0x3C09800EU,
@@ -122,7 +134,7 @@ constexpr std::array<std::uint32_t, 59U> action_body{
     0x018B6023U, // subu t4,t4,t3
     0x01896021U, // addu t4,t4,t1
     0xAC8C0114U, // sw t4,0x114(a0)
-    encodeJump(action_arena + 57U * 4U),
+    encodeJump(action_arena + 66U * 4U),
     0x00000000U,
     0xAC890114U, // set_face: sw t1,0x114(a0)
     0x0C01B3FFU, // call: jal RequestAction

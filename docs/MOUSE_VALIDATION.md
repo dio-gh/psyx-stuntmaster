@@ -33,15 +33,20 @@ Use this short pass:
 5. Press F10 once for character-relative mode. Movement should rotate with
    Jackie and use the ordinary run path. Compare control feel and troublesome
    animation/geometry situations with camera-relative mode.
-6. Press F10 again for off. Capture and mouse attacks should stop and stock
+6. In camera-relative mode, cross a launcher or other bouncy surface while
+   holding each movement direction. Confirm directional air control remains
+   available. Also sample a fall, push interaction, and ladder if convenient;
+   these contextual handlers retain retail Move rather than being converted to
+   Strafe.
+7. Press F10 again for off. Capture and mouse attacks should stop and stock
    camera-relative movement/facing should return. A third press returns to
    camera-relative mode.
-7. Pause and resume, enter/leave photo mode with F11, Alt+Tab away and back,
+8. Pause and resume, enter/leave photo mode with F11, Alt+Tab away and back,
    trigger a movie/cutscene if convenient, and quick-save/load with F5/F9.
    Capture must follow ownership, no click may leak across a transition, and
    returning to play must synchronize to the current player yaw without a
    stale turn.
-8. Optionally bind Middle/X1/X2 to the other semantic actions in `input.ini`
+9. Optionally bind Middle/X1/X2 to the other semantic actions in `input.ini`
    and switch the retail controller layout. The semantic action must remain the
    same under every layout.
 

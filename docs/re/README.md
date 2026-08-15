@@ -2233,7 +2233,12 @@ there and a mode byte at `padZero+8`. A reversible trampoline displaces the
 final `jal RequestAction` at `0x80075398`, after retail has already computed
 its camera-relative `faceAngle`. Camera-relative mode stores mouse yaw in
 `Player+0x2c`, preserves that travel angle, and maps ordinary Run action 2 to
-authored Strafe action 6. Character-relative mode instead rotates the travel
+authored Strafe action 6 only while `Player+0x164` is Stand (1), Run (10), or
+Strafe (11). Contextual states retain action 2: notably, launcher-driven
+`Player::_Flip` checks command bit 2 before applying directional force, so an
+unconditional replacement makes bouncy surfaces immobile. Falls, pushing,
+ladders, and other special handlers also consume that bit directly.
+Character-relative mode instead rotates the travel
 angle by `mouseYaw - cameraYaw` and retains Run. Non-movement and stationary
 requests set both orientation and face angle to mouse yaw.
 

@@ -169,12 +169,13 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     assert(runtime.state().gpr[5] == 2U);
 
     // Camera-relative mode turns the player, preserves retail's travel angle,
-    // and substitutes the real Strafe action for Run.
+    // and substitutes the real Strafe action for Run during normal locomotion.
     assert(runtime.write8(0x800DFA38U, 1U));
     assert(runtime.write32(0x800DFA34U, 0x2345U));
     assert(runtime.write32(player + 0x2CU, 0x1111U));
     assert(runtime.write32(player + 0x114U, 0x3456U));
     assert(runtime.write32(player + 0xD0U, 100U));
+    assert(runtime.write32(player + 0x164U, 10U)); // AS_RUN
     runtime.reset(0x80075398U, 0U, 0x801F0000U);
     runtime.setRegister(4, player); // a0
     runtime.setRegister(16, 2U);    // s0: Run
@@ -182,6 +183,24 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     assert(runtime.read32(player + 0x2CU, value) && value == 0x2345U);
     assert(runtime.read32(player + 0x114U, value) && value == 0x3456U);
     assert(runtime.state().gpr[5] == 6U); // a1: Strafe
+    for (const auto ordinary_state : std::array<std::uint32_t, 2U>{1U, 11U}) {
+        assert(runtime.write32(player + 0x164U, ordinary_state));
+        runtime.reset(0x80075398U, 0U, 0x801F0000U);
+        runtime.setRegister(4, player);
+        runtime.setRegister(16, 2U);
+        runUntil(0x80075398U, 0x800753A0U);
+        assert(runtime.state().gpr[5] == 6U);
+    }
+
+    // Contextual movement handlers consume Move itself. In particular,
+    // Player::_Flip on launcher/bouncy surfaces gates its air control on bit 2,
+    // so camera-relative mode must not replace it while that state is active.
+    assert(runtime.write32(player + 0x164U, 17U)); // AS_FLIP_VARIANT
+    runtime.reset(0x80075398U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(16, 2U);
+    runUntil(0x80075398U, 0x800753A0U);
+    assert(runtime.state().gpr[5] == 2U); // a1: contextual Move preserved
 
     // Idle and non-movement action requests align faceAngle as well, so
     // attacking after a mouse turn does not snap back to stale travel facing.

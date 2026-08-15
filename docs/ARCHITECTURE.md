@@ -82,9 +82,12 @@ window-fingerprinted guest trampolines consume them: PlayerUserControl's final
 `RequestAction` call applies orientation and either camera-relative authored
 strafe or character-relative movement; Player `_Straif` skips automatic target
 acquisition and releases an existing target in either mouse-facing mode. Mode
-zero follows the displaced stock branches/call. Quick saves normalize these
-host-owned patches out of the copied runtime and fingerprint-reapply them on
-load. The guest remains the only writer of Player state.
+zero follows the displaced stock branches/call. Run-to-Strafe substitution is
+limited to the ordinary Stand, Run, and Strafe states. Contextual handlers such
+as launcher flips, falls, pushing, and ladders retain retail's Move action bit,
+which several of them consume directly for directional control. Quick saves
+normalize these host-owned patches out of the copied runtime and fingerprint-
+reapply them on load. The guest remains the only writer of Player state.
 
 Guest execution stays inside `R3000Runtime::runBatch` until a machine boundary:
 an HLE/BIOS or diagnostic PC, a claimed MMIO access, a stop/fault, or the exact
