@@ -125,6 +125,13 @@ public:
         pad_one_connected_ = connected;
         pad_one_buttons_ = active_low_buttons;
     }
+    // Host/guest mouse bridge in bytes unused by retail's digital-pad driver.
+    // `mode` uses MouseMovementMode's stable wire values (0..2).
+    void setMouseControlState(
+        std::uint32_t desired_yaw, std::uint8_t mode) noexcept {
+        mouse_desired_yaw_ = desired_yaw;
+        mouse_movement_mode_ = mode <= 2U ? mode : 0U;
+    }
     void setCdReadSink(CdReadSink sink) {
         cd_read_sink_ = std::move(sink);
     }
@@ -320,6 +327,11 @@ private:
     std::array<std::uint32_t, vsync_callback_slot_count> vsync_callbacks_{};
     std::uint16_t pad_one_buttons_{0xFFFFU};
     bool pad_one_connected_{true};
+    // Transient host input, deliberately outside the quick-save archive. A
+    // restored machine is reseeded from the current player before mode becomes
+    // active, preventing a saved host cursor position from rotating gameplay.
+    std::uint32_t mouse_desired_yaw_{};
+    std::uint8_t mouse_movement_mode_{};
     bool video_timing_baseline_initialized_{};
     disc::Iso9660Image* image_{};
     CdReadSink cd_read_sink_;

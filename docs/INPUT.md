@@ -50,6 +50,53 @@ Gamepad supports the same actions with the `gamepad.` prefix, plus:
 left_x left_y right_x right_y
 ```
 
+Mouse bindings use gameplay semantics rather than fixed PlayStation buttons.
+This matters when the game's controller layout changes: `mouse.punch=Left`
+still requests Punch through the live retail layout instead of always
+impersonating Square. The host then leaves retail's own command table to derive
+heavy, back, directional, held, and chorded attacks.
+
+Supported semantic mouse actions are:
+
+```text
+punch kick grab jump dive_roll strafe counter status
+```
+
+Each accepts `Left`, `Right`, `Middle`, `X1`, `X2`, or `None`. Defaults bind
+left click to Punch and right click to Kick; the other six are unbound. A mouse
+button may be assigned to more than one action deliberately. Mouse gameplay
+actions are accepted only during exact player control, so clicks do not become
+face-button presses in the title, menus, pause screen, movies, loads,
+cutscenes, or photo mode. Keyboard and gamepad bindings remain active and may
+be combined with mouse actions normally.
+
+Horizontal movement turns the character. The initial behavior and sensitivity
+are configurable:
+
+```ini
+mouse.movement_mode=camera_relative
+mouse.sensitivity=20
+```
+
+Sensitivity is positive guest angle units per horizontal pixel; 65,536 units
+make one full turn. `F10` cycles these modes at runtime:
+
+- `camera_relative`: W/A/S/D retain the fixed camera's movement directions
+  while mouse yaw independently controls facing. Ordinary Run uses retail's
+  authored directional strafe path and its forward/side/back animation table.
+- `character_relative`: movement directions rotate with mouse yaw and retain
+  the ordinary Run path. This is the fallback/A-B mode when camera-relative
+  strafing does not feel appropriate for a situation.
+- `off`: stock movement and facing, no mouse actions, and no cursor capture.
+
+Both mouse-facing modes suppress retail strafe's automatic foe acquisition and
+release an existing strafe target through retail's own target API. Explicit
+attacks, countering, and the game's other combat logic remain unchanged.
+Vertical mouse motion is intentionally unused because the gameplay camera is
+fixed. Cursor capture begins only after the guest confirms steady
+`PlayerUserControl` with window focus, and is released on pause, loss of
+control/focus, movies, loads, photo mode, and `off` mode.
+
 `input.example.ini` is the canonical complete example. PsyCross's standard SDL
 controller mapping supplies the default gamepad layout. The host reports port
 one to the retail pad driver as a connected DualShock, so the game's Options
@@ -57,14 +104,17 @@ vibration toggle and shake code run; the retail motor values drive
 `SDL_GameControllerRumble` on the first attached game controller. Port two,
 analog-mode switching, and a graphical rebinding UI are deferred.
 
+The focused gameplay and transition pass is in
+[MOUSE_VALIDATION.md](MOUSE_VALIDATION.md).
+
 Window and render size are independent of bindings. The default 1280x720
 window contains a 960x720 original-4:3 target. `--render-size WIDTHxHEIGHT`
 fixes another internal resolution independently of the resizable SDL window.
 
-The number-row `0` key is always reserved as the debug overlay's host-only
-visibility toggle. `--debug-overlay` selects visible-by-default. The key is
-masked at the PAD bridge even if an input configuration assigns `0` to a guest
-action.
+The number-row `0` and `F10` keys are always reserved as host-only controls
+(diagnostic-overlay visibility and mouse-mode cycling, respectively). They are
+masked at the PAD bridge even if an input configuration assigns either key to
+a guest action. `--debug-overlay` selects visible-by-default.
 
 `F11` toggles the experimental photo mode during steady gameplay. It starts
 with the simulation frozen; `P` freezes/resumes simulation without leaving the

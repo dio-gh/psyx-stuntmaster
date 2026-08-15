@@ -1,10 +1,12 @@
 #pragma once
 
 #include "stuntmaster/game/free_camera.hpp"
+#include "stuntmaster/game/mouse_control.hpp"
 #include "stuntmaster/presentation/debug_overlay.hpp"
 #include "stuntmaster/presentation/license_overlay.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -17,6 +19,7 @@
 
 // Matches SDL's own global typedef; keeps SDL.h out of this header.
 typedef struct _SDL_GameController SDL_GameController;
+union SDL_Event;
 
 namespace stuntmaster::presentation {
 
@@ -24,6 +27,12 @@ struct GpuReplaySegment {
     std::vector<std::vector<std::uint32_t>> packets;
     std::vector<std::uint16_t> vram;
     std::uint64_t vram_revision{};
+};
+
+struct MouseControlInput {
+    std::uint8_t held_actions{};
+    std::uint8_t pressed_actions{};
+    std::int32_t mouse_x{};
 };
 
 // Presentation adapter for captured retail GPU state. It is built only when
@@ -51,6 +60,20 @@ public:
     PsyCrossPresenter& operator=(const PsyCrossPresenter&) = delete;
 
     [[nodiscard]] std::uint16_t pollPadOneButtons();
+    [[nodiscard]] MouseControlInput takeMouseControlInput() noexcept {
+        const MouseControlInput input{
+            mouse_held_actions_, mouse_pressed_actions_, mouse_x_};
+        mouse_pressed_actions_ = 0U;
+        mouse_x_ = 0;
+        return input;
+    }
+    [[nodiscard]] bool takeMouseModeCycleRequest() noexcept {
+        return std::exchange(mouse_mode_cycle_requested_, false);
+    }
+    [[nodiscard]] const game::MouseControlConfig& mouseControlConfig()
+        const noexcept {
+        return mouse_config_;
+    }
     // Drive the first attached SDL game controller's rumble motors. `motor1`
     // is the DualShock big/low-frequency actuator and `motor2` the
     // small/high-frequency one, matching the retail actuator table order.
@@ -99,6 +122,10 @@ public:
     // capture follows the accepted state rather than the F11 edge, so a toggle
     // refused during a load or cutscene never traps the cursor.
     void setFreeCameraActive(bool active) noexcept;
+    // Main-thread acknowledgement of the worker's exact gameplay gate. Mouse
+    // capture and semantic clicks follow this accepted state, never merely the
+    // configured mode or the F10 edge.
+    void setMouseGameplayAccepted(bool accepted) noexcept;
     void setPhotoModeAvailable(bool available) noexcept {
         photo_mode_available_ = available;
     }
@@ -261,6 +288,8 @@ private:
     // pad word is active-low (a cleared bit means pressed).
     void updateLicenseViewerInput(std::uint16_t pad_buttons);
     [[nodiscard]] SDL_GameController* ensureGameController() noexcept;
+    static int mouseEventWatch(void* userdata, SDL_Event* event) noexcept;
+    void updateRelativeMouseMode() noexcept;
 
     bool has_scanout_{};
     std::uint32_t scanout_width_{};
@@ -300,6 +329,7 @@ private:
     int retime_toggle_key_{};
     int widescreen_toggle_key_{};
     int free_camera_toggle_key_{};
+    int mouse_mode_toggle_key_{};
     int photo_simulation_toggle_key_{};
     int free_camera_forward_key_{};
     int free_camera_backward_key_{};
@@ -314,6 +344,7 @@ private:
     bool retime_toggle_key_down_{};
     bool widescreen_toggle_key_down_{};
     bool free_camera_toggle_key_down_{};
+    bool mouse_mode_toggle_key_down_{};
     bool free_camera_controller_select_down_{};
     bool photo_simulation_toggle_key_down_{};
     bool photo_simulation_controller_r3_down_{};
@@ -323,9 +354,18 @@ private:
     bool retime_toggle_requested_{};
     bool widescreen_toggle_requested_{};
     bool free_camera_toggle_requested_{};
+    bool mouse_mode_cycle_requested_{};
     bool photo_simulation_toggle_requested_{};
     bool free_camera_active_{};
     bool photo_mode_available_{};
+    game::MouseControlConfig mouse_config_{};
+    bool mouse_gameplay_accepted_{};
+    bool relative_mouse_active_{};
+    std::uint8_t mouse_held_actions_{};
+    std::uint8_t mouse_pressed_actions_{};
+    std::int32_t mouse_x_{};
+    std::atomic<unsigned int> mouse_button_press_latch_{};
+    bool mouse_event_watch_installed_{};
     std::uint8_t free_camera_movement_{};
     std::int32_t free_camera_mouse_x_{};
     std::int32_t free_camera_mouse_y_{};

@@ -2208,6 +2208,42 @@ Circle is contextual grab/interact, which explains no animation when nothing
 grabbable is in range. The host's `--input-trace` observes the normalized host
 word without injecting input.
 
+### Semantic mouse input and player-facing seam — verified
+
+The eight bytes at `*(0x800DD69C)+0x2E0` are the current port-zero
+physical-to-logical `Control` map. The exact three retail layouts at
+`0x800D64A4` are permutations of logical Status, Strafe, Counter, Dive Roll,
+Kick, Grab, Jump, and Punch. Translating a mouse semantic through the inverse
+of this live map, then applying host PAD bit `physical ^ 8`, lets
+`ReadSonyPads`, `Control`, `FindButtonMapping` (`0x8002E754`), and the 20-entry
+command table keep deriving all chords, directions, and holds normally.
+
+Mouse input is gated on `gsPlayState` (`0x80029C6C`), a valid `thePlayer`
+(`0x800DD6B4`), and Behaviour handler `PlayerUserControl` (`0x80074F5C`). It is
+therefore absent from pause (`gsMenuState`, `0x80029EF8`), the front end,
+movies, loads, NIS control, invalid object transitions, and photo mode.
+
+Retail's digital pad reader ignores `padZero+4`; the host publishes desired
+yaw there and a mode byte at `padZero+8`. A reversible trampoline displaces the
+final `jal RequestAction` at `0x80075398`, after retail has already computed
+its camera-relative `faceAngle`. Camera-relative mode stores mouse yaw in
+`Player+0x2c`, preserves that travel angle, and maps ordinary Run action 2 to
+authored Strafe action 6. Character-relative mode instead rotates the travel
+angle by `mouseYaw - cameraYaw` and retains Run. Non-movement and stationary
+requests set both orientation and face angle to mouse yaw.
+
+`Player::_Straif` normally acquires a foe at `0x80034010`. A second trampoline
+keeps the stock branch in mode zero, while either mouse-facing mode skips
+acquisition and calls retail `ReleaseTarget` (`0x80065200`) for an existing
+target. Its animation table at `0x800D91E0` remains untouched.
+
+Both sites verify their complete neighboring instruction windows before either
+is changed, install transactionally at patch-arena offsets `+0x000` and
+`+0x200`, and restore the exact displaced words. Emulator tests execute the
+camera-relative, character-relative, target-release, no-target, and stock
+branches with architectural R3000A load delays; this caught and corrected an
+initial unscheduled-load draft before live use.
+
 Use the committed disassembler for focused verification:
 
 ```powershell

@@ -5,6 +5,7 @@
 #include "stuntmaster/core/state_archive.hpp"
 #include "stuntmaster/game/free_camera.hpp"
 #include "stuntmaster/game/guest_schedule.hpp"
+#include "stuntmaster/game/mouse_control.hpp"
 #include "stuntmaster/game/retail_hle.hpp"
 #include "stuntmaster/game/retail_patch.hpp"
 #include "stuntmaster/game/retiming.hpp"
@@ -38,6 +39,220 @@
 #include <vector>
 
 namespace {
+
+void mouseControlIsSemanticFingerprintGatedAndReversible() {
+    using Runtime = stuntmaster::psx::R3000Runtime;
+    using stuntmaster::game::MouseButton;
+    using stuntmaster::game::MouseMovementMode;
+
+    const std::array<bool, 8U> punch_and_kick{
+        false, false, false, false, true, false, false, true};
+    const std::array<std::uint8_t, 8U> identity{0, 1, 2, 3, 4, 5, 6, 7};
+    assert(stuntmaster::game::applySemanticMouseActions(
+               0xFFFFU, punch_and_kick, identity) == 0x6FFFU);
+    // Layout 2 maps physical 0/1/2 and 4/5/6 onto different semantics.
+    const std::array<std::uint8_t, 8U> layout_two{1, 2, 0, 3, 5, 6, 4, 7};
+    assert(stuntmaster::game::applySemanticMouseActions(
+               0xFFFFU, punch_and_kick, layout_two) == 0x3FFFU);
+    const std::array<std::uint8_t, 8U> invalid{0, 0, 2, 3, 4, 5, 6, 7};
+    assert(stuntmaster::game::applySemanticMouseActions(
+               0xABCDU, punch_and_kick, invalid) == 0xABCDU);
+
+    assert(stuntmaster::game::parseMouseButton("LEFT") == MouseButton::left);
+    assert(stuntmaster::game::parseMouseButton("x2") == MouseButton::x2);
+    assert(!stuntmaster::game::parseMouseButton("wheel"));
+    assert(stuntmaster::game::parseMouseMovementMode("camera_relative") ==
+           MouseMovementMode::camera_relative);
+    assert(!stuntmaster::game::parseMouseMovementMode("tank"));
+
+    stuntmaster::game::MouseYawController yaw;
+    stuntmaster::game::MouseGameplayContext context{};
+    context.player_yaw = 0xFFF0U;
+    yaw.update(context, 2, 20);
+    assert(yaw.accepted());
+    assert(yaw.desiredYaw() == 0x10018U);
+    assert(yaw.cycleMode() == MouseMovementMode::character_relative);
+    assert(!yaw.accepted());
+    yaw.update(context, -1, 20);
+    assert(yaw.desiredYaw() == 0xFFDCU);
+    yaw.update(std::nullopt, 100, 20);
+    assert(!yaw.accepted());
+
+    Runtime runtime;
+    constexpr std::uint32_t game = 0x80110000U;
+    constexpr std::uint32_t player = 0x80120000U;
+    constexpr std::uint32_t behaviour = 0x80121000U;
+    constexpr std::uint32_t input = 0x80130000U;
+    assert(runtime.write32(0x800DD668U, game));
+    assert(runtime.write32(game + 0x1CU, 0x80029C6CU));
+    assert(runtime.write32(0x800DD6B4U, player));
+    assert(runtime.write32(player + 0x1B8U, behaviour));
+    assert(runtime.write32(behaviour + 0xE0U, 0x80074F5CU));
+    assert(runtime.write32(player + 0x2CU, 0x12345678U));
+    assert(runtime.write32(0x800DD69CU, input));
+    for (std::size_t index = 0U; index < identity.size(); ++index) {
+        assert(runtime.write8(
+            input + 0x2E0U + static_cast<std::uint32_t>(index),
+            identity[index]));
+    }
+    const auto live = stuntmaster::game::readMouseGameplayContext(runtime);
+    assert(live && live->player == player &&
+           live->player_yaw == 0x12345678U &&
+           live->physical_to_logical == identity);
+    assert(!stuntmaster::game::readMouseGameplayContext(runtime, true));
+    assert(runtime.write32(behaviour + 0xE0U, 0x80000000U));
+    assert(!stuntmaster::game::readMouseGameplayContext(runtime));
+    assert(runtime.write32(behaviour + 0xE0U, 0x80074F5CU));
+
+    const std::array<std::uint32_t, 8U> action_window{
+        0x8E640018U, 0x0C0193AAU, 0x02802821U, 0x8E640018U,
+        0x0C01B3FFU, 0x02002821U, 0x8FBF0040U, 0x8FB5003CU};
+    const std::array<std::uint32_t, 8U> target_window{
+        0x8E020100U, 0U, 0x1440000BU, 0U,
+        0x8F8501D4U, 0x8E020008U, 0x8F8601D8U, 0x8C4200ECU};
+    assert(runtime.loadBytes(
+        0x80075388U, std::as_bytes(std::span{action_window})));
+    assert(runtime.loadBytes(
+        0x80034008U, std::as_bytes(std::span{target_window})));
+    assert(stuntmaster::game::setMouseControlPatches(runtime, true));
+    assert(stuntmaster::game::setMouseControlPatches(runtime, true));
+    std::uint32_t site_word = 0U;
+    assert(runtime.read32(0x80075398U, site_word));
+    assert(site_word == 0x08000C00U);
+    assert(runtime.read32(0x80034010U, site_word));
+    assert(site_word == 0x08000C80U);
+
+    const std::array<std::uint32_t, 2U> return_stub{
+        0x03E00008U, 0U}; // jr ra; nop
+    assert(runtime.loadBytes(
+        0x8006CFFCU, std::as_bytes(std::span{return_stub})));
+    const auto runUntil = [&](std::uint32_t start, std::uint32_t stop) {
+        assert(runtime.state().pc == start);
+        for (int executed = 0; executed < 256 && runtime.state().pc != stop;
+             ++executed) {
+            const auto step = runtime.step();
+            assert(step.reason == stuntmaster::psx::R3000StopReason::running);
+        }
+        assert(runtime.state().pc == stop);
+        runtime.settleLoadDelay();
+    };
+
+    // Installed mode zero reproduces the displaced retail call without
+    // touching facing or the requested action.
+    assert(runtime.write8(0x800DFA38U, 0U));
+    assert(runtime.write32(0x800DFA34U, 0x9999U));
+    assert(runtime.write32(player + 0x2CU, 0x1111U));
+    assert(runtime.write32(player + 0x114U, 0x3456U));
+    assert(runtime.write32(player + 0xD0U, 100U));
+    runtime.reset(0x80075398U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(16, 2U);
+    runUntil(0x80075398U, 0x800753A0U);
+    std::uint32_t value = 0U;
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x1111U);
+    assert(runtime.read32(player + 0x114U, value) && value == 0x3456U);
+    assert(runtime.state().gpr[5] == 2U);
+
+    // Camera-relative mode turns the player, preserves retail's travel angle,
+    // and substitutes the real Strafe action for Run.
+    assert(runtime.write8(0x800DFA38U, 1U));
+    assert(runtime.write32(0x800DFA34U, 0x2345U));
+    assert(runtime.write32(player + 0x2CU, 0x1111U));
+    assert(runtime.write32(player + 0x114U, 0x3456U));
+    assert(runtime.write32(player + 0xD0U, 100U));
+    runtime.reset(0x80075398U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player); // a0
+    runtime.setRegister(16, 2U);    // s0: Run
+    runUntil(0x80075398U, 0x800753A0U);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x2345U);
+    assert(runtime.read32(player + 0x114U, value) && value == 0x3456U);
+    assert(runtime.state().gpr[5] == 6U); // a1: Strafe
+
+    // Idle and non-movement action requests align faceAngle as well, so
+    // attacking after a mouse turn does not snap back to stale travel facing.
+    assert(runtime.write32(0x800DFA34U, 0x4567U));
+    assert(runtime.write32(player + 0xD0U, 0U));
+    runtime.reset(0x80075398U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(16, 2U);
+    runUntil(0x80075398U, 0x800753A0U);
+    assert(runtime.read32(player + 0x114U, value) && value == 0x4567U);
+    assert(runtime.write32(0x800DFA34U, 0x5678U));
+    assert(runtime.write32(player + 0xD0U, 100U));
+    runtime.reset(0x80075398U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(16, 8U); // non-movement action
+    runUntil(0x80075398U, 0x800753A0U);
+    assert(runtime.read32(player + 0x114U, value) && value == 0x5678U);
+
+    // Character-relative mode rotates the camera-derived movement direction
+    // by the mouse/player yaw delta without changing the retail action.
+    constexpr std::uint32_t camera = 0x80140000U;
+    assert(runtime.write8(0x800DFA38U, 2U));
+    assert(runtime.write32(0x800DFA34U, 0x2000U));
+    assert(runtime.write32(0x800DD734U, camera));
+    assert(runtime.write32(camera + 0x2CU, 0x1000U));
+    assert(runtime.write32(player + 0x114U, 0x1100U));
+    runtime.reset(0x80075398U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(16, 2U);
+    runUntil(0x80075398U, 0x800753A0U);
+    assert(runtime.read32(player + 0x114U, value) && value == 0x2100U);
+    assert(runtime.state().gpr[5] == 2U);
+
+    // Both mouse modes skip automatic acquisition. An existing target goes
+    // through ReleaseTarget; a missing one continues after acquisition.
+    assert(runtime.write8(0x800DFA38U, 1U));
+    runtime.reset(0x80034010U, 0U, 0x801F0000U);
+    runtime.setRegister(2, 0x80150000U); // v0: existing target
+    runtime.setRegister(16, player);     // s0
+    runUntil(0x80034010U, 0x80065200U);
+    assert(runtime.state().gpr[4] == player);
+    runtime.reset(0x80034010U, 0U, 0x801F0000U);
+    runtime.setRegister(2, 0U);
+    runtime.setRegister(16, player);
+    runUntil(0x80034010U, 0x80034040U);
+    assert(runtime.write8(0x800DFA38U, 0U));
+    runtime.reset(0x80034010U, 0U, 0x801F0000U);
+    runtime.setRegister(2, 0U);
+    runtime.setRegister(16, player);
+    runUntil(0x80034010U, 0x80034018U);
+
+    assert(stuntmaster::game::setMouseControlPatches(runtime, false));
+    assert(stuntmaster::game::setMouseControlPatches(runtime, false));
+    assert(runtime.read32(0x80075398U, site_word));
+    assert(site_word == 0x0C01B3FFU);
+    assert(runtime.read32(0x80034010U, site_word));
+    assert(site_word == 0x1440000BU);
+
+    // A surrounding-window mismatch refuses both patches without modifying
+    // either site.
+    assert(runtime.write32(0x80075388U, 0U));
+    assert(!stuntmaster::game::setMouseControlPatches(runtime, true));
+    assert(runtime.read32(0x80075398U, site_word));
+    assert(site_word == 0x0C01B3FFU);
+    assert(runtime.read32(0x80034010U, site_word));
+    assert(site_word == 0x1440000BU);
+}
+
+void retailHlePublishesMouseExtensionWithoutChangingDigitalPadBytes() {
+    stuntmaster::psx::R3000Runtime runtime;
+    stuntmaster::game::RetailHle hle;
+    hle.setPadOneState(true, 0x6FFFU);
+    hle.setMouseControlState(0x12345678U, 2U);
+    assert(hle.onVBlank(runtime));
+    std::uint8_t byte = 0U;
+    std::uint32_t yaw = 0U;
+    assert(runtime.read8(0x800DFA30U, byte) && byte == 0U);
+    assert(runtime.read8(0x800DFA31U, byte) && byte == 0x41U);
+    assert(runtime.read8(0x800DFA32U, byte) && byte == 0xFFU);
+    assert(runtime.read8(0x800DFA33U, byte) && byte == 0x6FU);
+    assert(runtime.read32(0x800DFA34U, yaw) && yaw == 0x12345678U);
+    assert(runtime.read8(0x800DFA38U, byte) && byte == 2U);
+    hle.setMouseControlState(0U, 99U);
+    assert(hle.onVBlank(runtime));
+    assert(runtime.read8(0x800DFA38U, byte) && byte == 0U);
+}
 
 void stoppedFlipPublicationsAreVBlankBoundedAndSelfContained() {
     using stuntmaster::presentation::GpuReplaySegment;
@@ -6653,6 +6868,8 @@ void licenseOverlayWrapsFoldsAndPaginates() {
 }
 
 int main() {
+    mouseControlIsSemanticFingerprintGatedAndReversible();
+    retailHlePublishesMouseExtensionWithoutChangingDigitalPadBytes();
     // A taken branch must execute its delay slot before the target; the
     // retime hooks rely on this ordering (a hook site that is another
     // branch's delay slot would lose the branch target, so such sites are

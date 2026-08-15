@@ -377,6 +377,10 @@ bool RetailHle::onVBlank(psx::R3000Runtime& runtime) {
         !runtime.write8(
             pad_one_buffer_address + 3U,
             static_cast<std::uint8_t>(pad_one_buttons_ >> 8U)) ||
+        !runtime.write32(
+            pad_one_buffer_address + 4U, mouse_desired_yaw_) ||
+        !runtime.write8(
+            pad_one_buffer_address + 8U, mouse_movement_mode_) ||
         !runtime.write8(pad_two_buffer_address, 0xFFU)) {
         return false;
     }

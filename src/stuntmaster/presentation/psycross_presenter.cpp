@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -45,7 +46,9 @@ std::string_view trim(std::string_view value) noexcept {
     return value.substr(first, last - first + 1U);
 }
 
-void applyInputConfig(const std::filesystem::path& path) {
+void applyInputConfig(
+    const std::filesystem::path& path,
+    game::MouseControlConfig& mouse_config) {
     if (path.empty()) {
         return;
     }
@@ -99,6 +102,40 @@ void applyInputConfig(const std::filesystem::path& path) {
         std::pair{"gamepad.right_x", &g_cfg_controllerMapping.gc_axis_right_x},
         std::pair{"gamepad.right_y", &g_cfg_controllerMapping.gc_axis_right_y},
     };
+    const std::array mouse_bindings{
+        std::pair{
+            "mouse.status",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::status)]},
+        std::pair{
+            "mouse.strafe",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::strafe)]},
+        std::pair{
+            "mouse.counter",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::counter)]},
+        std::pair{
+            "mouse.dive_roll",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::dive_roll)]},
+        std::pair{
+            "mouse.kick",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::kick)]},
+        std::pair{
+            "mouse.grab",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::grab)]},
+        std::pair{
+            "mouse.jump",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::jump)]},
+        std::pair{
+            "mouse.punch",
+            &mouse_config.actions[static_cast<std::size_t>(
+                game::PrimaryAction::punch)]},
+    };
 
     std::string line;
     std::size_t line_number = 0U;
@@ -151,6 +188,45 @@ void applyInputConfig(const std::filesystem::path& path) {
                     break;
                 }
             }
+        }
+        if (!matched) {
+            for (const auto& [name, destination] : mouse_bindings) {
+                if (key == name) {
+                    const auto button = game::parseMouseButton(value);
+                    if (!button) {
+                        throw std::runtime_error{
+                            "invalid mouse binding on line " +
+                            std::to_string(line_number)};
+                    }
+                    *destination = *button;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (!matched && key == "mouse.movement_mode") {
+            const auto mode = game::parseMouseMovementMode(value);
+            if (!mode) {
+                throw std::runtime_error{
+                    "invalid mouse movement mode on line " +
+                    std::to_string(line_number)};
+            }
+            mouse_config.initial_mode = *mode;
+            matched = true;
+        }
+        if (!matched && key == "mouse.sensitivity") {
+            std::int32_t parsed = 0;
+            const auto result = std::from_chars(
+                value.data(), value.data() + value.size(), parsed);
+            if (result.ec != std::errc{} ||
+                result.ptr != value.data() + value.size() || parsed < 1 ||
+                parsed > 1'000) {
+                throw std::runtime_error{
+                    "invalid mouse sensitivity on line " +
+                    std::to_string(line_number)};
+            }
+            mouse_config.yaw_units_per_pixel = parsed;
+            matched = true;
         }
         if (!matched) {
             throw std::runtime_error{
@@ -664,7 +740,7 @@ PsyCrossPresenter::PsyCrossPresenter(
         "A", g_cfg_keyboardMapping.kc_dpad_left);
     g_cfg_keyboardMapping.kc_dpad_right = PsyX_LookupKeyboardMapping(
         "D", g_cfg_keyboardMapping.kc_dpad_right);
-    applyInputConfig(input_config);
+    applyInputConfig(input_config, mouse_config_);
     debug_overlay_toggle_key_ = PsyX_LookupKeyboardMapping("0", 0);
     quick_save_key_ = PsyX_LookupKeyboardMapping("F5", 0);
     quick_load_key_ = PsyX_LookupKeyboardMapping("F9", 0);
@@ -673,6 +749,7 @@ PsyCrossPresenter::PsyCrossPresenter(
     widescreen_toggle_key_ = PsyX_LookupKeyboardMapping("F8", 0);
     license_toggle_key_ = PsyX_LookupKeyboardMapping("L", 0);
     free_camera_toggle_key_ = PsyX_LookupKeyboardMapping("F11", 0);
+    mouse_mode_toggle_key_ = PsyX_LookupKeyboardMapping("F10", 0);
     photo_simulation_toggle_key_ = PsyX_LookupKeyboardMapping("P", 0);
     free_camera_forward_key_ = PsyX_LookupKeyboardMapping("W", 0);
     free_camera_backward_key_ = PsyX_LookupKeyboardMapping("S", 0);
@@ -683,6 +760,8 @@ PsyCrossPresenter::PsyCrossPresenter(
     free_camera_fast_key_ = PsyX_LookupKeyboardMapping("Left Shift", 0);
     PadInitDirect(pad_one_.data(), pad_two_.data());
     PadStartCom();
+    SDL_AddEventWatch(&PsyCrossPresenter::mouseEventWatch, this);
+    mouse_event_watch_installed_ = true;
     initialized_ = true;
 }
 
@@ -695,6 +774,10 @@ bool PsyCrossPresenter::isFullscreen() const noexcept {
 }
 
 PsyCrossPresenter::~PsyCrossPresenter() {
+    if (mouse_event_watch_installed_) {
+        SDL_DelEventWatch(&PsyCrossPresenter::mouseEventWatch, this);
+        mouse_event_watch_installed_ = false;
+    }
     if (initialized_) {
         PadStopCom();
         if (rumble_controller_ != nullptr) {
@@ -748,6 +831,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         keyPressed(widescreen_toggle_key_);
     const auto free_camera_toggle_pressed =
         keyPressed(free_camera_toggle_key_);
+    const auto mouse_mode_toggle_pressed = keyPressed(mouse_mode_toggle_key_);
     const auto photo_simulation_toggle_pressed =
         keyPressed(photo_simulation_toggle_key_);
     const auto controller_select_pressed =
@@ -774,6 +858,8 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
         (free_camera_toggle_pressed && !free_camera_toggle_key_down_) ||
         (controller_select_consumed &&
          !free_camera_controller_select_down_);
+    mouse_mode_cycle_requested_ = mouse_mode_cycle_requested_ ||
+        (mouse_mode_toggle_pressed && !mouse_mode_toggle_key_down_);
     photo_simulation_toggle_requested_ =
         photo_simulation_toggle_requested_ ||
         (free_camera_active_ &&
@@ -787,6 +873,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     retime_toggle_key_down_ = retime_toggle_pressed;
     widescreen_toggle_key_down_ = widescreen_toggle_pressed;
     free_camera_toggle_key_down_ = free_camera_toggle_pressed;
+    mouse_mode_toggle_key_down_ = mouse_mode_toggle_pressed;
     free_camera_controller_select_down_ = controller_select_pressed;
     photo_simulation_toggle_key_down_ = photo_simulation_toggle_pressed;
     photo_simulation_controller_r3_down_ = controller_r3_pressed;
@@ -809,6 +896,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     free_camera_controller_forward_ = 0;
     free_camera_controller_look_x_ = 0;
     free_camera_controller_look_y_ = 0;
+    updateRelativeMouseMode();
     if (free_camera_active_) {
         int mouse_x = 0;
         int mouse_y = 0;
@@ -835,6 +923,44 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
             static_cast<int>(ascend) - static_cast<int>(descend));
         free_camera_controller_look_x_ = look[0];
         free_camera_controller_look_y_ = look[1];
+    } else if (mouse_gameplay_accepted_ && relative_mouse_active_) {
+        int mouse_x = 0;
+        int ignored_y = 0;
+        (void)SDL_GetRelativeMouseState(&mouse_x, &ignored_y);
+        mouse_x_ += mouse_x;
+    }
+    const auto held_mouse_buttons = SDL_GetMouseState(nullptr, nullptr);
+    const auto pressed_mouse_buttons = mouse_button_press_latch_.exchange(
+        0U, std::memory_order_acq_rel);
+    mouse_held_actions_ = 0U;
+    if (mouse_gameplay_accepted_ && relative_mouse_active_ &&
+        !free_camera_active_) {
+        const auto buttonMask = [](game::MouseButton button) -> unsigned int {
+            switch (button) {
+            case game::MouseButton::left: return SDL_BUTTON(SDL_BUTTON_LEFT);
+            case game::MouseButton::right: return SDL_BUTTON(SDL_BUTTON_RIGHT);
+            case game::MouseButton::middle:
+                return SDL_BUTTON(SDL_BUTTON_MIDDLE);
+            case game::MouseButton::x1: return SDL_BUTTON(SDL_BUTTON_X1);
+            case game::MouseButton::x2: return SDL_BUTTON(SDL_BUTTON_X2);
+            case game::MouseButton::none: return 0U;
+            }
+            return 0U;
+        };
+        for (std::size_t action = 0U; action < mouse_config_.actions.size();
+             ++action) {
+            const auto mask = buttonMask(mouse_config_.actions[action]);
+            if ((held_mouse_buttons & mask) != 0U) {
+                mouse_held_actions_ |= static_cast<std::uint8_t>(1U << action);
+            }
+            if ((pressed_mouse_buttons & mask) != 0U) {
+                mouse_pressed_actions_ |=
+                    static_cast<std::uint8_t>(1U << action);
+            }
+        }
+    } else {
+        mouse_pressed_actions_ = 0U;
+        mouse_x_ = 0;
     }
     debug_overlay_visible_ = debug_overlay_toggle_.update(
         debug_overlay_.enabled,
@@ -857,6 +983,9 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     license_toggle_key_down_ = license_toggle_pressed;
     if (license_viewer_active_) {
         updateLicenseViewerInput(buttons);
+        mouse_held_actions_ = 0U;
+        mouse_pressed_actions_ = 0U;
+        mouse_x_ = 0;
         previous_trace_buttons_ = 0xFFFFU;
         return 0xFFFFU;
     }
@@ -874,6 +1003,7 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
     if ((debug_overlay_.enabled && toggle_pressed) || quick_save_pressed ||
         quick_load_pressed || timestamped_quick_save_pressed ||
         retime_toggle_pressed || widescreen_toggle_pressed ||
+        mouse_mode_toggle_pressed ||
         free_camera_toggle_pressed ||
         (free_camera_active_ && photo_simulation_toggle_pressed) ||
         free_camera_movement_ != 0U) {
@@ -889,6 +1019,8 @@ std::uint16_t PsyCrossPresenter::pollPadOneButtons() {
                 (retime_toggle_pressed && mapping == retime_toggle_key_) ||
                 (widescreen_toggle_pressed &&
                  mapping == widescreen_toggle_key_) ||
+                (mouse_mode_toggle_pressed &&
+                 mapping == mouse_mode_toggle_key_) ||
                 (free_camera_toggle_pressed &&
                  mapping == free_camera_toggle_key_) ||
                 (free_camera_active_ && photo_simulation_toggle_pressed &&
@@ -949,7 +1081,43 @@ void PsyCrossPresenter::setFreeCameraActive(bool active) noexcept {
     free_camera_controller_forward_ = 0;
     free_camera_controller_look_x_ = 0;
     free_camera_controller_look_y_ = 0;
-    (void)SDL_SetRelativeMouseMode(active ? SDL_TRUE : SDL_FALSE);
+    updateRelativeMouseMode();
+}
+
+int PsyCrossPresenter::mouseEventWatch(
+    void* userdata, SDL_Event* event) noexcept {
+    if (userdata != nullptr && event != nullptr &&
+        event->type == SDL_MOUSEBUTTONDOWN) {
+        auto* presenter = static_cast<PsyCrossPresenter*>(userdata);
+        presenter->mouse_button_press_latch_.fetch_or(
+            SDL_BUTTON(event->button.button), std::memory_order_release);
+    }
+    return 1;
+}
+
+void PsyCrossPresenter::setMouseGameplayAccepted(bool accepted) noexcept {
+    if (mouse_gameplay_accepted_ == accepted) {
+        updateRelativeMouseMode();
+        return;
+    }
+    mouse_gameplay_accepted_ = accepted;
+    mouse_held_actions_ = 0U;
+    mouse_pressed_actions_ = 0U;
+    mouse_x_ = 0;
+    updateRelativeMouseMode();
+}
+
+void PsyCrossPresenter::updateRelativeMouseMode() noexcept {
+    const auto focused = g_window != nullptr &&
+        (SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS) != 0U;
+    const auto wanted = focused &&
+        (free_camera_active_ || mouse_gameplay_accepted_);
+    if (relative_mouse_active_ == wanted) {
+        return;
+    }
+    const auto changed =
+        SDL_SetRelativeMouseMode(wanted ? SDL_TRUE : SDL_FALSE) == 0;
+    relative_mouse_active_ = wanted && changed;
     int ignored_x = 0;
     int ignored_y = 0;
     (void)SDL_GetRelativeMouseState(&ignored_x, &ignored_y);

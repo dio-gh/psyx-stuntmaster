@@ -18,6 +18,7 @@
 #include "stuntmaster/disc/iso9660.hpp"
 #include "stuntmaster/game/free_camera.hpp"
 #include "stuntmaster/game/guest_schedule.hpp"
+#include "stuntmaster/game/mouse_control.hpp"
 #include "stuntmaster/game/retail_hle.hpp"
 #include "stuntmaster/game/retail_patch.hpp"
 #include "stuntmaster/game/retiming.hpp"
@@ -751,6 +752,15 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 std::cout << "widescreen_x_limit=" << std::dec
                           << widescreen_x_limit << '\n';
             }
+            if (options->run_live) {
+                if (!stuntmaster::game::setMouseControlPatches(runtime, true)) {
+                    throw stuntmaster::core::Error{
+                        "mouse control refused: a retail input fingerprint "
+                        "did not match"};
+                }
+                std::cout << "retail_patch=mouse_player_action\n"
+                             "retail_patch=mouse_strafe_target\n";
+            }
             if (options->experimental_host_menu) {
                 retail_hle.setHostMenuWidescreenCull(
                     widescreen_cull_active);
@@ -1068,6 +1078,19 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             stuntmaster::core::BoundedLatestMailbox<RetainedGpuFrame, 2U>
                 frame_mailbox;
             std::atomic<std::uint16_t> latest_pad_one_buttons{0xFFFFU};
+            std::atomic<std::uint8_t> latest_mouse_held_actions{};
+            std::atomic<std::uint8_t> latched_mouse_pressed_actions{};
+            std::atomic<std::int32_t> gameplay_mouse_x{};
+            std::atomic<bool> mouse_mode_cycle_requested{};
+            std::atomic<bool> published_mouse_gameplay_accepted{};
+            std::atomic<bool> presenter_mouse_input_active{};
+            const auto mouse_config = live_presenter
+                ? live_presenter->mouseControlConfig()
+                : stuntmaster::game::MouseControlConfig{};
+            stuntmaster::game::MouseYawController mouse_yaw;
+            mouse_yaw.setMode(mouse_config.initial_mode);
+            std::optional<stuntmaster::game::MouseGameplayContext>
+                mouse_gameplay_context;
             // Packed rumble request from the guest worker: motor1 |
             // motor2 << 8 | duration_ms << 16. Zero means no active shake.
             // The main thread applies it to the SDL game controller.
@@ -1148,6 +1171,9 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 free_camera_unavailable,
                 photo_simulation_frozen,
                 photo_simulation_running,
+                mouse_camera_relative,
+                mouse_character_relative,
+                mouse_off,
             };
             std::atomic<QuickSaveNotification> quick_save_notification{
                 QuickSaveNotification::none};
@@ -1601,6 +1627,12 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 }
                 saved.retime_state.photo_simulation_frozen = false;
                 saved.retime_state.photo_camera_active = false;
+                if (options->run_live &&
+                    !stuntmaster::game::setMouseControlPatches(
+                        saved.runtime, false)) {
+                    throw stuntmaster::core::Error{
+                        "unable to normalize mouse-control patches"};
+                }
                 const auto payload = encodeQuickSave(saved);
                 writeQuickSaveFile(
                     path,
@@ -1645,6 +1677,13 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         "quick save contains an inconsistent widescreen "
                         "cull patch"};
                 }
+                if (options->run_live &&
+                    !stuntmaster::game::setMouseControlPatches(
+                        loaded.runtime, true)) {
+                    throw stuntmaster::core::Error{
+                        "quick save contains inconsistent mouse-control "
+                        "patches"};
+                }
                 // Do not change even host-owned runtime settings until the
                 // complete payload has decoded successfully. The file's
                 // requested rate is state metadata, so a save made after an
@@ -1664,6 +1703,16 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 published_free_camera_active.store(
                     false, std::memory_order_release);
                 published_photo_mode_available.store(
+                    false, std::memory_order_release);
+                mouse_yaw.abandon();
+                mouse_gameplay_context.reset();
+                latest_mouse_held_actions.store(
+                    0U, std::memory_order_release);
+                (void)latched_mouse_pressed_actions.exchange(
+                    0U, std::memory_order_acq_rel);
+                published_mouse_gameplay_accepted.store(
+                    false, std::memory_order_release);
+                presenter_mouse_input_active.store(
                     false, std::memory_order_release);
                 loaded.retime_state.photo_simulation_frozen = false;
                 loaded.retime_state.photo_camera_active = false;
@@ -1777,6 +1826,44 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 case stuntmaster::game::FreeCameraResult::unchanged:
                     break;
                 }
+                if (mouse_mode_cycle_requested.exchange(
+                        false, std::memory_order_acq_rel)) {
+                    const auto mode = mouse_yaw.cycleMode();
+                    quick_save_notification.store(
+                        mode == stuntmaster::game::
+                                    MouseMovementMode::camera_relative
+                            ? QuickSaveNotification::mouse_camera_relative
+                        : mode == stuntmaster::game::
+                                      MouseMovementMode::character_relative
+                            ? QuickSaveNotification::mouse_character_relative
+                            : QuickSaveNotification::mouse_off,
+                        std::memory_order_release);
+                }
+                mouse_gameplay_context =
+                    stuntmaster::game::readMouseGameplayContext(
+                        runtime, free_camera.active());
+                mouse_yaw.update(
+                    mouse_gameplay_context,
+                    gameplay_mouse_x.exchange(0, std::memory_order_acq_rel),
+                    mouse_config.yaw_units_per_pixel);
+                const auto mouse_accepted = mouse_yaw.accepted();
+                if (!mouse_accepted) {
+                    mouse_gameplay_context.reset();
+                    latest_mouse_held_actions.store(
+                        0U, std::memory_order_release);
+                    presenter_mouse_input_active.store(
+                        false, std::memory_order_release);
+                    (void)latched_mouse_pressed_actions.exchange(
+                        0U, std::memory_order_acq_rel);
+                }
+                published_mouse_gameplay_accepted.store(
+                    mouse_accepted, std::memory_order_release);
+                retail_hle.setMouseControlState(
+                    mouse_yaw.desiredYaw(),
+                    mouse_accepted
+                        ? static_cast<std::uint8_t>(mouse_yaw.mode())
+                        : static_cast<std::uint8_t>(
+                              stuntmaster::game::MouseMovementMode::off));
                 const auto requested_host_menu_rate =
                     host_menu_update_rate_requested.exchange(
                         0U, std::memory_order_acq_rel);
@@ -2692,10 +2779,34 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         }
                         next_vblank += guest_instructions_per_vblank;
                         if (options->run_live) {
-                            retail_hle.setPadOneState(
-                                true,
-                                latest_pad_one_buttons.load(
-                                    std::memory_order_acquire));
+                            auto buttons = latest_pad_one_buttons.load(
+                                std::memory_order_acquire);
+                            const auto actions = static_cast<std::uint8_t>(
+                                latest_mouse_held_actions.load(
+                                    std::memory_order_acquire) |
+                                latched_mouse_pressed_actions.exchange(
+                                    0U, std::memory_order_acq_rel));
+                            if (mouse_gameplay_context &&
+                                mouse_yaw.accepted() &&
+                                presenter_mouse_input_active.load(
+                                    std::memory_order_acquire)) {
+                                std::array<bool,
+                                    stuntmaster::game::primary_action_count>
+                                    semantic_actions{};
+                                for (std::size_t index = 0U;
+                                     index < semantic_actions.size();
+                                     ++index) {
+                                    semantic_actions[index] =
+                                        (actions & (1U << index)) != 0U;
+                                }
+                                buttons = stuntmaster::game::
+                                    applySemanticMouseActions(
+                                        buttons,
+                                        semantic_actions,
+                                        mouse_gameplay_context->
+                                            physical_to_logical);
+                            }
+                            retail_hle.setPadOneState(true, buttons);
                         } else if (!options->scripted_input.empty()) {
                             // Presses combine, so overlapping entries in the
                             // script behave like holding both.
@@ -3249,6 +3360,17 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         live_presenter->showNotification(
                             "PHOTO SIMULATION RUNNING");
                         break;
+                    case QuickSaveNotification::mouse_camera_relative:
+                        live_presenter->showNotification(
+                            "MOUSE: CAMERA-RELATIVE MOVE");
+                        break;
+                    case QuickSaveNotification::mouse_character_relative:
+                        live_presenter->showNotification(
+                            "MOUSE: CHARACTER-RELATIVE MOVE");
+                        break;
+                    case QuickSaveNotification::mouse_off:
+                        live_presenter->showNotification("MOUSE CONTROL OFF");
+                        break;
                     case QuickSaveNotification::none:
                         break;
                     }
@@ -3500,8 +3622,29 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         live_presenter->setPhotoModeAvailable(
                             published_photo_mode_available.load(
                                 std::memory_order_acquire));
+                        const auto mouse_input_accepted =
+                            published_mouse_gameplay_accepted.load(
+                                std::memory_order_acquire);
+                        live_presenter->setMouseGameplayAccepted(
+                            mouse_input_accepted);
                         const auto physical_buttons =
                             live_presenter->pollPadOneButtons();
+                        const auto mouse_input =
+                            live_presenter->takeMouseControlInput();
+                        latest_mouse_held_actions.store(
+                            mouse_input.held_actions,
+                            std::memory_order_release);
+                        latched_mouse_pressed_actions.fetch_or(
+                            mouse_input.pressed_actions,
+                            std::memory_order_release);
+                        gameplay_mouse_x.fetch_add(
+                            mouse_input.mouse_x,
+                            std::memory_order_release);
+                        presenter_mouse_input_active.store(
+                            mouse_input_accepted &&
+                                published_mouse_gameplay_accepted.load(
+                                    std::memory_order_acquire),
+                            std::memory_order_release);
                         const auto camera_input =
                             live_presenter->takeFreeCameraInput();
                         free_camera_movement.store(
@@ -3553,6 +3696,10 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         }
                         if (live_presenter->takeFreeCameraToggleRequest()) {
                             free_camera_toggle_requested.store(
+                                true, std::memory_order_release);
+                        }
+                        if (live_presenter->takeMouseModeCycleRequest()) {
+                            mouse_mode_cycle_requested.store(
                                 true, std::memory_order_release);
                         }
                         if (live_presenter->
