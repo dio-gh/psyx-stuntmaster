@@ -1,6 +1,6 @@
 # Mouse control live validation
 
-Phase 4 automated coverage executes all twelve fingerprinted guest seams, the
+Phase 4 automated coverage executes all thirteen fingerprinted guest seams, the
 complete action-ownership classification, current-frame yaw publication,
 directional Run animations, bounded host turning, context handoff, install and
 revert. Phase 4 is the live campaign pass for gameplay feel and unusual retail
@@ -32,9 +32,15 @@ Use this pass:
    backward authored animations while his official body heading follows the
    mouse. He must remain in ordinary Run rather than targeting Strafe.
 5. Fight beside one and several foes. Free locomotion must not acquire a foe or
-   rotate Jackie toward one. Punch, kick, counter, grabs, pickups, throws,
-   directional/back attacks, held attacks, and keyboard/gamepad combinations
-   should keep retail context and combo behavior.
+   rotate Jackie toward one. During the opening frames of Punch and Kick,
+   turning the mouse should steer Jackie's official body and attack direction
+   instead of snapping toward the selected foe. Once a strike becomes active,
+   facing should lock until its next combo targeting window so animation, root
+   motion, and hitboxes cannot spin independently. Directional/back attacks
+   must retain their authored turn, and mouse movement made during the lock
+   should become available at the next combo window without an instant snap.
+   Counter, grabs, pickups, throws, held attacks, and keyboard/gamepad
+   combinations should keep retail context and combo behavior.
 6. Exercise a launcher/bouncy surface, standing and running jump, dive roll,
    fall, slope, table roll, pushable object, ladder, ledge, wall, pole, and
    explicit Strafe where available. Context entry must claim the appropriate
@@ -46,7 +52,7 @@ Use this pass:
    must still follow the held camera-relative direction.
 7. Watch the heading diagnostic. Expected mouse-lease and normal retail-owned
    splits—including ledge latch and combat—are console-only and labelled
-   `free_lease` or `retail_owned`. Only a split in a state that explicitly
+   `free_lease`, `combat_lease`, or `retail_owned`. Only a split in a state that explicitly
    committed the headings, such as push, roll, slope, or hotfoot, can show
    `HEADING SPLIT: COMMITTED` after half a second. Console lines include state,
    body yaw, travel yaw, and signed delta, and a continuing split is

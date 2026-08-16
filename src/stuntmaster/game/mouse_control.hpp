@@ -75,6 +75,7 @@ struct MouseGameplayContext {
 enum class MouseHeadingSplitKind : std::uint8_t {
     aligned,
     free_lease,
+    combat_lease,
     retail_owned,
     committed_context,
 };

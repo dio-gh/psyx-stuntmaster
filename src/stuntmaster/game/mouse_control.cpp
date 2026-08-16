@@ -36,11 +36,14 @@ constexpr std::uint32_t mouse_mailbox_yaw = 0x800DFA34U;
 constexpr std::uint32_t mouse_mailbox_mode = 0x800DFA38U;
 constexpr std::uint32_t extension_last_mode = 0x800057F0U;
 constexpr std::uint32_t extension_animation_loop = 0x800057F4U;
+constexpr std::uint32_t extension_combat_node = 0x800057F8U;
+constexpr std::uint32_t extension_combat_yaw_offset = 0x800057FCU;
 
 enum Register : std::uint32_t {
-    zero = 0U, v0 = 2U, v1 = 3U, a0 = 4U, a1 = 5U, a2 = 6U,
+    zero = 0U, at = 1U, v0 = 2U, v1 = 3U, a0 = 4U, a1 = 5U, a2 = 6U,
     a3 = 7U, t0 = 8U, t1 = 9U, t2 = 10U, t3 = 11U, t4 = 12U,
-    t5 = 13U, t6 = 14U, s0 = 16U, s1 = 17U, s4 = 20U, gp = 28U,
+    t5 = 13U, t6 = 14U, s0 = 16U, s1 = 17U, s2 = 18U, s3 = 19U,
+    s4 = 20U, gp = 28U,
     sp = 29U, ra = 31U,
 };
 
@@ -138,6 +141,8 @@ constexpr std::uint32_t jump_face_second_site = 0x800321ACU;
 constexpr std::uint32_t jump_face_second_arena = 0x80004F60U;
 constexpr std::uint32_t fall_face_site = 0x800323D8U;
 constexpr std::uint32_t fall_face_arena = 0x80005100U;
+constexpr std::uint32_t combat_face_site = 0x8006AE54U;
+constexpr std::uint32_t combat_face_arena = 0x80005200U;
 
 // Stand, ambient Player idle, Run, player running/standing jumps,
 // Fall/HardFall, and launcher Flip variants retain an independent
@@ -153,6 +158,14 @@ constexpr std::uint32_t committed_heading_state_mask = 0x40781000U;
     std::uint32_t action_state) noexcept {
     return action_state < 31U &&
         (free_facing_state_mask & (1U << action_state)) != 0U;
+}
+[[nodiscard]] constexpr bool combatFacingState(
+    std::uint32_t action_state) noexcept {
+    return action_state == 32U || action_state == 34U;
+}
+[[nodiscard]] constexpr bool mouseFacingState(
+    std::uint32_t action_state) noexcept {
+    return freeFacingState(action_state) || combatFacingState(action_state);
 }
 [[nodiscard]] constexpr bool committedHeadingState(
     std::uint32_t action_state) noexcept {
@@ -196,6 +209,10 @@ constexpr std::array<std::uint32_t, 9U> jump_face_second_window{
 constexpr std::array<std::uint32_t, 9U> fall_face_window{
     0xAFA70010U, 0xAFA80014U, 0xAFA90018U, 0x8E250114U, 0x0C0193ACU,
     0x24060001U, 0x3C10800DU, 0x02202021U, 0x8E056550U};
+constexpr std::array<std::uint32_t, 9U> combat_face_window{
+    0x00C0A021U, 0x0282102AU, 0x10400007U, 0x00000000U,
+    0x8E650100U, 0x00000000U, 0x10A00003U, 0x02602021U,
+    0x0C0192E6U};
 
 constexpr std::array<std::uint32_t, 26U> run_jump_force_body{
     lui(t0, 0x800EU), lbu(t0, static_cast<std::int16_t>(mouse_mailbox_mode), t0), 0U,
@@ -244,10 +261,10 @@ constexpr auto fall_face_body = makeFaceLeaseBody(
 // The first prologue word is not hook-safe: its following store would execute
 // before the stack allocation in a jump delay slot. At 0x800303D8 the stack is
 // established, s1/s4 carry Player/newState, and the delay-slot store is safe.
-constexpr std::array<std::uint32_t, 36U> ownership_body{
+constexpr std::array<std::uint32_t, 39U> ownership_body{
     lui(t0, 0x800EU), lbu(t0, static_cast<std::int16_t>(mouse_mailbox_mode), t0), 0U,
     addiu(t1, t0, -1),
-    encodeBranch(0x05U, t1, zero, ownership_arena + 16U, ownership_arena + 140U), 0U,
+    encodeBranch(0x05U, t1, zero, ownership_arena + 16U, ownership_arena + 152U), 0U,
     sltiu(t1, s4, 31U),
     encodeBranch(0x04U, t1, zero, ownership_arena + 28U, ownership_arena + 60U), 0U,
     lui(t2, 0x4030U), ori(t2, t2, 0x1000U), srlv(t2, t2, s4), andi(t2, t2, 1U),
@@ -258,9 +275,12 @@ constexpr std::array<std::uint32_t, 36U> ownership_body{
     encodeBranch(0x04U, t1, zero, ownership_arena + 76U, ownership_arena + 128U), 0U,
     addiu(t1, s4, -32), sltiu(t1, t1, 14U),
     encodeBranch(0x05U, t1, zero, ownership_arena + 92U, ownership_arena + 128U), 0U,
-    encodeJump(ownership_arena + 140U), 0U,
-    lw(t1, 0x114, s1), 0U, sw(t1, 0x2C, s1), encodeJump(ownership_arena + 140U), 0U,
-    lw(t1, 0x2C, s1), 0U, sw(t1, 0x114, s1), sw(ra, 0x40, sp),
+    encodeJump(ownership_arena + 152U), 0U,
+    lw(t1, 0x114, s1), 0U, sw(t1, 0x2C, s1), encodeJump(ownership_arena + 152U), 0U,
+    lw(t1, 0x2C, s1), 0U, sw(t1, 0x114, s1), lui(t1, 0x8000U),
+    sw(zero, static_cast<std::int16_t>(extension_combat_node), t1),
+    sw(zero, static_cast<std::int16_t>(extension_combat_yaw_offset), t1),
+    sw(ra, 0x40, sp),
 };
 
 constexpr std::array<std::uint32_t, 12U> stand_move_body{
@@ -352,6 +372,61 @@ constexpr std::array<std::uint32_t, 59U> input_yaw_body{
     lw(t1, 0x2C, v0),
 };
 
+// ProcessGenericFightingMove already grants retail a short target-tracking
+// window before root motion and strike collision become active. For Jackie's
+// ordinary punch/kick states, replace only that target-facing call with the
+// bounded mouse yaw. The per-combo offset retains authored back attacks: the
+// first node captures SetCurrentFightingNode's initial turnDelta, and later
+// nodes accumulate their own turnDelta without consuming mouse movement that
+// arrived while the active strike was facing-locked.
+constexpr std::array<std::uint32_t, 57U> combat_face_body{
+    lui(at, 0x800EU), lbu(at, static_cast<std::int16_t>(mouse_mailbox_mode), at), 0U,
+    addiu(at, at, -1),
+    encodeBranch(0x05U, at, zero, combat_face_arena + 16U,
+                 combat_face_arena + 76U), 0U,
+    lui(at, 0x800EU), lw(a1, static_cast<std::int16_t>(player_address), at), 0U,
+    encodeBranch(0x05U, s3, a1, combat_face_arena + 36U,
+                 combat_face_arena + 76U), 0U,
+    lw(a1, 0x164, s3), 0U, addiu(at, a1, -32),
+    encodeBranch(0x04U, at, zero, combat_face_arena + 56U,
+                 combat_face_arena + 108U), 0U,
+    addiu(at, a1, -34),
+    encodeBranch(0x04U, at, zero, combat_face_arena + 68U,
+                 combat_face_arena + 108U), 0U,
+
+    // Exact retail fallback, including its no-target register state.
+    lw(a1, 0x100, s3), 0U,
+    encodeBranch(0x04U, a1, zero, combat_face_arena + 84U,
+                 combat_face_arena + 228U), addu(a0, s3, zero),
+    encodeJal(0x80064B98U), addiu(a2, zero, 1),
+    encodeJump(combat_face_arena + 228U), 0U,
+
+    // Mouse path: distinguish the first combo node from a chained node.
+    lw(t0, 0x1E4, s3), lui(t1, 0x8000U),
+    lw(t2, static_cast<std::int16_t>(extension_combat_node), t1), 0U,
+    encodeBranch(0x04U, t0, t2, combat_face_arena + 124U,
+                 combat_face_arena + 196U), 0U,
+    encodeBranch(0x04U, t2, zero, combat_face_arena + 132U,
+                 combat_face_arena + 168U), 0U,
+    lw(t2, static_cast<std::int16_t>(extension_combat_yaw_offset), t1),
+    lw(t3, 4, s2), 0U, addu(t2, t2, t3),
+    sw(t2, static_cast<std::int16_t>(extension_combat_yaw_offset), t1),
+    encodeJump(combat_face_arena + 192U), 0U,
+
+    // First node: capture the already-applied authored turn relative to the
+    // current base mouse yaw.
+    lw(t2, 0x2C, s3), lui(t3, 0x800EU),
+    lw(t3, static_cast<std::int16_t>(mouse_mailbox_yaw), t3), 0U,
+    subu(t2, t2, t3),
+    sw(t2, static_cast<std::int16_t>(extension_combat_yaw_offset), t1),
+    sw(t0, static_cast<std::int16_t>(extension_combat_node), t1),
+
+    lui(t3, 0x800EU), lw(a1, static_cast<std::int16_t>(mouse_mailbox_yaw), t3),
+    lw(t2, static_cast<std::int16_t>(extension_combat_yaw_offset), t1), 0U,
+    addu(a1, a1, t2), addu(a0, s3, zero),
+    encodeJal(0x80064EB0U), addiu(a2, zero, 1),
+};
+
 struct MousePatchDefinition {
     RetailTrampoline trampoline;
     std::span<const std::uint32_t> window;
@@ -403,6 +478,10 @@ struct MousePatchDefinition {
         MousePatchDefinition{{"mouse_input_yaw", input_yaw_site,
                               input_yaw_window[4], input_yaw_arena, 0x8007517CU,
                               input_yaw_body}, input_yaw_window, input_yaw_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_combat_face", combat_face_site,
+                              combat_face_window[4], combat_face_arena,
+                              0x8006AE6CU, combat_face_body},
+                             combat_face_window, combat_face_site - 16U, 4U},
     };
     return definitions;
 }
@@ -505,6 +584,8 @@ MouseHeadingDiagnostic mouseHeadingDiagnostic(
     if (result.signed_delta != 0) {
         if (freeFacingState(context.action_state)) {
             result.kind = MouseHeadingSplitKind::free_lease;
+        } else if (combatFacingState(context.action_state)) {
+            result.kind = MouseHeadingSplitKind::combat_lease;
         } else if (committedHeadingState(context.action_state)) {
             result.kind = MouseHeadingSplitKind::committed_context;
         } else {
@@ -544,7 +625,7 @@ MouseYawController::MouseYawController(MouseControlConfig config) noexcept
       turn_acceleration_{std::clamp(config.turn_acceleration, 60U, 10'000U)} {}
 
 bool MouseYawController::freeFacingLease(std::uint32_t action_state) noexcept {
-    return freeFacingState(action_state);
+    return mouseFacingState(action_state);
 }
 
 void MouseYawController::setMode(MouseMovementMode mode) noexcept {
@@ -693,8 +774,8 @@ std::string_view mouseMovementModeName(MouseMovementMode mode) noexcept {
 
 bool setMouseControlPatches(psx::R3000Runtime& runtime, bool enabled) noexcept {
     const auto definitions = mousePatches();
-    std::array<bool, 12U> installed{};
-    std::array<bool, 12U> stock{};
+    std::array<bool, 13U> installed{};
+    std::array<bool, 13U> stock{};
     for (std::size_t index = 0U; index < definitions.size(); ++index) {
         const auto& definition = definitions[index];
         installed[index] = trampolineInstalled(runtime, definition.trampoline) &&
@@ -721,7 +802,9 @@ bool setMouseControlPatches(psx::R3000Runtime& runtime, bool enabled) noexcept {
             }
         }
         if (runtime.write32(extension_last_mode, 0U) &&
-            runtime.write32(extension_animation_loop, 0U)) {
+            runtime.write32(extension_animation_loop, 0U) &&
+            runtime.write32(extension_combat_node, 0U) &&
+            runtime.write32(extension_combat_yaw_offset, 0U)) {
             return true;
         }
         for (std::size_t index = definitions.size(); index > 0U; --index)
@@ -738,7 +821,9 @@ bool setMouseControlPatches(psx::R3000Runtime& runtime, bool enabled) noexcept {
         }
     }
     return runtime.write32(extension_last_mode, 0U) &&
-        runtime.write32(extension_animation_loop, 0U);
+        runtime.write32(extension_animation_loop, 0U) &&
+        runtime.write32(extension_combat_node, 0U) &&
+        runtime.write32(extension_combat_yaw_offset, 0U);
 }
 
 } // namespace stuntmaster::game

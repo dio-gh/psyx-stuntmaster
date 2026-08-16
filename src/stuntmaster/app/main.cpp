@@ -1871,6 +1871,8 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                                 MouseHeadingSplitKind;
                             switch (diagnostic.kind) {
                             case SplitKind::free_lease: return "free_lease";
+                            case SplitKind::combat_lease:
+                                return "combat_lease";
                             case SplitKind::retail_owned:
                                 return "retail_owned";
                             case SplitKind::committed_context:

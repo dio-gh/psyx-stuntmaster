@@ -99,10 +99,15 @@ Stand, Jackie's ambient idle sequence, Run, running/standing Jump,
 Fall/HardFall, and launcher Flip variants grant mouse ownership of body yaw.
 Their movement force remains
 camera-relative through `faceAngle`; attacks, interactions, grounded traversal,
-reactions, and scripts take explicit ownership at action transitions. Relative
-orientation gestures are discarded while those contexts own facing and
-re-entry reseeds from the live body without a snap. Explicit retail Strafe
-retains its normal targeting behavior.
+reactions, and scripts take explicit ownership at action transitions. Ordinary
+Punch and Kick are the narrow combat exception: during retail's existing early
+target-tracking frames, mouse yaw replaces automatic foe-facing; the active
+strike and recovery then lock facing so root motion, animation, and hitboxes
+continue to agree. Authored back-attack and combo turns remain additive.
+Relative orientation gestures are otherwise discarded while a context owns
+facing, and re-entry reseeds from the live body without a snap. Explicit retail
+Strafe, grabs, counters, pickups, and throws retain their normal targeting and
+attachment behavior.
 The legacy `mouse.sensitivity` setting from the first experimental build is
 still accepted so an existing `input.ini` starts normally, but the bounded
 controller uses `turn_rate` and `turn_acceleration` instead. Cursor capture

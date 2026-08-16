@@ -2269,12 +2269,13 @@ shipping movement architecture.
 
 ### Dual-heading mouse locomotion — implemented and emulator-tested
 
-The final implementation replaces the prototype with twelve transactional,
+The final implementation replaces the prototype with thirteen transactional,
 fingerprinted resident seams: action ownership at `0x800303D8`, Stand movement
 at `0x80031534`, Stand final facing at `0x800319A8`, Run stop animation at
 `0x80032718`, Run facing/animation at `0x8003291C`, and the input yaw snapshot
-at `0x80075174`, plus running-jump force and five repeated Jump/Fall/Flip
-facing sites. Bodies live in the separately proved guest-extension arena
+at `0x80075174`, plus running-jump force, five repeated Jump/Fall/Flip facing
+sites, and Punch/Kick targeting-window facing at `0x8006AE54`. Bodies live in
+the separately proved guest-extension arena
 `0x80004800`–`0x800057FF`; quick saves normalize and rehydrate the entire set.
 
 The host publishes a bounded, shortest-arc mouse yaw rather than snapping to
@@ -2285,6 +2286,16 @@ cap preserves every target direction without banking extra revolutions.
 Expected lease and retail-owned body/travel splits remain console-only;
 persistent splits in explicitly committed states retain transition/rate-limited
 diagnostics and a delayed on-screen notification.
+
+`ProcessGenericFightingMove` calls `FaceThing(target, 1)` only while
+`frame < GetTargetingFrame(move)` (normally frames 0–7) at
+`0x8006AE54`–`0x8006AE68`. The combat seam replaces only that call for the
+live Player in states 32/34 and mouse mode, including the no-target case. It
+calls retail `FaceAngleY(mouseYaw + comboOffset, 1)`, captures the first
+node's already-applied `turnDelta`, and accumulates later-node `turnDelta`
+values. After the targeting window, retail locks the resulting official body
+yaw for root motion and strike collision. NPCs, stock/off, grabs, counters,
+body throws, pickups, and throws retain the exact target/authored path.
 
 Emulator tests execute all action-ownership classes, current-frame yaw,
 context discard/reseed, four directional Run sectors, stop animation, stock

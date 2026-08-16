@@ -133,9 +133,17 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     yaw.update(context, -100, 0, 60U);
     assert(yaw.desiredYaw() != airborne_entry_yaw); // jump retains lease
     context.action_state = 32U;
+    const auto combat_entry_yaw = yaw.desiredYaw();
+    yaw.update(context, -100, 0, 60U);
+    assert(yaw.accepted() && yaw.desiredYaw() != combat_entry_yaw);
+    context.action_state = 34U;
+    const auto kick_entry_yaw = yaw.desiredYaw();
+    yaw.update(context, 100, 0, 60U);
+    assert(yaw.accepted() && yaw.desiredYaw() != kick_entry_yaw);
+    context.action_state = 36U;
     const auto context_entry_yaw = yaw.desiredYaw();
     yaw.update(context, -100, 0, 60U);
-    assert(yaw.desiredYaw() == context_entry_yaw); // context discards gesture
+    assert(yaw.desiredYaw() == context_entry_yaw); // throws remain authored
     context.player_yaw = 0x2222U;
     context.action_state = 10U;
     yaw.update(context, -100, 0, 60U);
@@ -160,7 +168,13 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
            MouseHeadingSplitKind::free_lease);
     context.action_state = 32U;
     diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
-    assert(diagnostic.kind == MouseHeadingSplitKind::retail_owned);
+    assert(diagnostic.kind == MouseHeadingSplitKind::combat_lease);
+    context.action_state = 34U;
+    assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
+           MouseHeadingSplitKind::combat_lease);
+    context.action_state = 36U;
+    assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
+           MouseHeadingSplitKind::retail_owned);
     context.action_state = 23U;
     assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
            MouseHeadingSplitKind::retail_owned);
@@ -198,7 +212,7 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
            live->travel_yaw == 0x5678U && live->action_state == 10U &&
            live->camera_yaw == 0x8765U);
 
-    const std::array<std::pair<std::uint32_t, std::array<std::uint32_t, 9U>>, 12U>
+    const std::array<std::pair<std::uint32_t, std::array<std::uint32_t, 9U>>, 13U>
         windows{{
             {0x800303D8U, {0xAFB40038U, 0x00A0A021U, 0xAFB30034U,
                            0x00C09821U, 0xAFBF0040U, 0xAFB5003CU,
@@ -236,6 +250,9 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
             {0x80075174U, {0x00002821U, 0x8E620018U, 0U,
                            0x8C480028U, 0x8C49002CU, 0x8C4A0030U,
                            0xAFA80018U, 0xAFA9001CU, 0xAFAA0020U}},
+            {0x8006AE54U, {0x00C0A021U, 0x0282102AU, 0x10400007U,
+                           0U, 0x8E650100U, 0U, 0x10A00003U,
+                           0x02602021U, 0x0C0192E6U}},
         }};
     for (const auto& [site, words] : windows)
         assert(runtime.loadBytes(site - 16U, std::as_bytes(std::span{words})));
@@ -254,6 +271,7 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
         std::pair{0x80032718U, 0x08001300U},
         std::pair{0x8003291CU, 0x08001340U},
         std::pair{0x80075174U, 0x08001400U},
+        std::pair{0x8006AE54U, 0x08001480U},
     };
     std::uint32_t value = 0U;
     for (const auto& [site, jump] : expected_sites) {
@@ -293,6 +311,11 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
                              38U, 39U, 40U, 41U, 42U, 43U, 44U, 45U}) {
         verifyOwnership(state, false, true);
     }
+    assert(runtime.write32(0x800057F8U, 0x12345678U));
+    assert(runtime.write32(0x800057FCU, 0x76543210U));
+    verifyOwnership(32U, false, true);
+    assert(runtime.read32(0x800057F8U, value) && value == 0U);
+    assert(runtime.read32(0x800057FCU, value) && value == 0U);
     for (const auto state : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U,
                              11U, 13U, 14U, 15U, 16U, 17U, 18U, 23U, 31U,
                              46U, 63U}) {
@@ -356,6 +379,81 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     runtime.setRegister(28, 0x800DC94CU);
     runUntil(0x80075174U, 0x8007517CU);
     assert(runtime.read32(player + 0x2CU, value) && value == 0x7777U);
+
+    // Generic punch/kick targeting uses the mouse only for Jackie and only
+    // while the existing retail targeting-frame gate reaches this seam.
+    // Stock/off, NPC, throw, and no-target paths retain retail semantics.
+    const std::array<std::uint32_t, 3U> face_thing_stub{
+        0x24031111U, 0x03E00008U, 0U};
+    const std::array<std::uint32_t, 3U> face_angle_stub{
+        0x24032222U, 0x03E00008U, 0U};
+    assert(runtime.loadBytes(
+        0x80064B98U, std::as_bytes(std::span{face_thing_stub})));
+    assert(runtime.loadBytes(
+        0x80064EB0U, std::as_bytes(std::span{face_angle_stub})));
+    constexpr std::uint32_t target = 0x80155000U;
+    constexpr std::uint32_t first_node = 0x80160000U;
+    constexpr std::uint32_t second_node = 0x80160100U;
+    constexpr std::uint32_t first_move = 0x80161000U;
+    constexpr std::uint32_t second_move = 0x80161100U;
+    const auto runCombatFace = [&](std::uint32_t actor, std::uint32_t move) {
+        runtime.reset(0x8006AE54U, 0U, 0x801F0000U);
+        runtime.setRegister(18, move);  // s2: current FightingMove
+        runtime.setRegister(19, actor); // s3: Humanoid
+        runtime.setRegister(3, 0U);
+        runUntil(0x8006AE54U, 0x8006AE6CU);
+    };
+
+    assert(runtime.write32(player + 0x100U, target));
+    assert(runtime.write32(player + 0x164U, 32U));
+    assert(runtime.write8(0x800DFA38U, 0U));
+    runCombatFace(player, first_move);
+    assert(runtime.state().gpr[3] == 0x1111U);
+    assert(runtime.state().gpr[4] == player &&
+           runtime.state().gpr[5] == target && runtime.state().gpr[6] == 1U);
+
+    assert(runtime.write32(player + 0x100U, 0U));
+    assert(runtime.write8(0x800DFA38U, 0U));
+    runCombatFace(player, first_move);
+    assert(runtime.state().gpr[3] == 0U);
+    assert(runtime.state().gpr[4] == player && runtime.state().gpr[5] == 0U);
+
+    assert(runtime.write8(0x800DFA38U, 1U));
+    assert(runtime.write32(player + 0x1E4U, first_node));
+    assert(runtime.write32(player + 0x2CU, 0x3000U));
+    assert(runtime.write32(0x800DFA34U, 0x1000U));
+    assert(runtime.write32(0x800057F8U, 0U));
+    assert(runtime.write32(0x800057FCU, 0U));
+    runCombatFace(player, first_move);
+    assert(runtime.state().gpr[3] == 0x2222U);
+    assert(runtime.state().gpr[4] == player &&
+           runtime.state().gpr[5] == 0x3000U && runtime.state().gpr[6] == 1U);
+    assert(runtime.read32(0x800057F8U, value) && value == first_node);
+    assert(runtime.read32(0x800057FCU, value) && value == 0x2000U);
+
+    // Movement queued after the first node's targeting window remains part of
+    // the next permitted mouse target instead of being silently discarded.
+    assert(runtime.write32(0x800DFA34U, 0x1800U));
+    runCombatFace(player, first_move);
+    assert(runtime.state().gpr[5] == 0x3800U);
+    assert(runtime.write32(player + 0x1E4U, second_node));
+    assert(runtime.write32(second_move + 4U, 0x8000U));
+    runCombatFace(player, second_move);
+    assert(runtime.state().gpr[5] == 0xB800U);
+    assert(runtime.read32(0x800057F8U, value) && value == second_node);
+    assert(runtime.read32(0x800057FCU, value) && value == 0xA000U);
+
+    // Mouse mode still follows retail target-facing for non-player actors and
+    // for Jackie's authored throw/combat-idle state.
+    constexpr std::uint32_t npc = 0x80170000U;
+    assert(runtime.write32(npc + 0x100U, target));
+    assert(runtime.write32(npc + 0x164U, 32U));
+    runCombatFace(npc, first_move);
+    assert(runtime.state().gpr[3] == 0x1111U);
+    assert(runtime.write32(player + 0x100U, target));
+    assert(runtime.write32(player + 0x164U, 36U));
+    runCombatFace(player, first_move);
+    assert(runtime.state().gpr[3] == 0x1111U);
 
     // Disabling in a free lease rejoins stock with body normalized to travel;
     // disabling during a context leaves the context-owned body untouched.

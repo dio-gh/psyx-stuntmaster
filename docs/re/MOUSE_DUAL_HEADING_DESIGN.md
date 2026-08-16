@@ -1,6 +1,6 @@
 # Mouse dual-heading design
 
-Status: Phase 4.2 idle-lease and diagnostic correction implemented and emulator-tested,
+Status: Phase 4.3 combat targeting lease implemented and emulator-tested,
 2026-08-16. This document records the selected architecture and its executable
 realization. Campaign and feel validation remain the Phase 4 gate.
 
@@ -15,7 +15,8 @@ an explicit, narrow lifetime:
 - Player Stand, ambient idle state `3`, Run, running/standing Jump,
   Fall/HardFall, and launcher Flip variants hold the **free-facing lease**, in
   which the fields may differ and mouse yaw owns `orientation.y`.
-- Every other action owns its authored/context heading. On an ownership
+- Every other action owns its authored/context heading, except for the retail
+  target-tracking window of ordinary Punch/Kick. On an ownership
   transition the guest extension either commits aim, commits travel, or leaves
   the transition to the retail surface/target code, then stops applying mouse
   yaw until a leased state resumes.
@@ -37,7 +38,7 @@ consumers require no redirection:
 | Consumer | Heading received | Reason |
 | --- | --- | --- |
 | `Humanoid::Draw` and model transforms | mouse/body | visible body agrees with gameplay |
-| attack joints, hand/foot wall collision, and root motion | mouse/body at entry, then authored | attacks originate in the displayed direction |
+| attack joints, hand/foot wall collision, and root motion | mouse/body during the early targeting window, then locked/authored | attacks originate in the displayed direction without rotating hitboxes during active frames |
 | enemy FOV and relative-facing decisions | mouse/body | AI observes what Jackie appears to face |
 | pickup reach, table fields, and pushable engagement | mouse/body | interactions use the official visible front |
 | Run force and ordinary camera-relative movement | `faceAngle` | retail already applies force along travel intent |
@@ -82,7 +83,7 @@ slot before stack allocation.
 | --- | --- | --- |
 | Free-facing | Stand `1`, ambient Player idle `3`, player running jump `6`, standing jump `8`, Run `10`, Fall/HardFall `13`–`14`, Flip `16`–`17` | preserve `faceAngle`; mouse may own `orientation.y` |
 | Travel-commit | dive roll `12`, Slope Slide `20`, Table Roll `21`, Hotfoot `30` | copy `faceAngle` to `orientation.y`, then retail owns both |
-| Aim/contact-commit | Push Object `19`, Push `22`, combat/interaction range `32`–`45` | copy `orientation.y` to `faceAngle`, then retail owns both |
+| Aim/contact-commit | Push Object `19`, Push `22`, combat/interaction range `32`–`45` | copy `orientation.y` to `faceAngle`; retail owns both except the narrow Punch/Kick targeting lease below |
 | Context-retail | every other state, including explicit Strafe `11`, HardLand `15`, wall/ledge/ladder/pole states, reactions, death, and NIS `73` | do not alter either field; the existing caller/handler owns alignment |
 
 The table is semantic and fail-closed: an unknown or unused state receives no
@@ -97,8 +98,10 @@ Concrete consequences:
 - a running/standing jump, fall, or launcher flip keeps visible mouse-facing
   while its force and steering continue in camera-relative travel direction;
 - dive roll, slope, table roll, and hotfoot commit visible facing to travel;
-- punch, kick, grab, pickup, throw, counter, and their derived variants start
-  from mouse-facing body yaw, after which fighting/target code may author turns;
+- punch and kick start from mouse-facing body yaw and continue accepting mouse
+  aim during their retail targeting frames; grabs, pickups, throws, counters,
+  and their derived variants start from mouse-facing body yaw and then remain
+  authored;
 - ledges, ladders, poles, wall jumps, hits, scripts, and NIS retain their
   existing alignment code without a mouse-state exception.
 
@@ -108,7 +111,9 @@ Its `_InactiveIdle` handler does not write heading, so it safely retains the
 mouse lease and returns to Stand normally when the animation completes.
 
 While a context owns heading, the host keeps mouse capture and semantic button
-input active but discards relative orientation gestures. When a leased state
+input active but discards relative orientation gestures. Punch/Kick remain a
+mouse-aim lease at the host, but the guest applies the resulting target only in
+retail's early tracking window. When another leased state
 regains ownership, yaw is reseeded from the live body before accepting the next
 non-zero gesture. Context motion therefore cannot queue a surprise snap.
 
@@ -201,6 +206,8 @@ The host also compares official body yaw with travel yaw while mouse mode is
 active. It assigns a split one of three ownership meanings:
 
 - `free_lease`: the mouse intentionally owns body independently;
+- `combat_lease`: Punch/Kick intentionally track mouse aim during their
+  opening targeting frames and then lock the active strike;
 - `retail_owned`: the action intentionally gives the fields different roles,
   such as ledge latch's ledge-normal body plus directional-command travel, or
   combat's target-authored turns after entry;
@@ -231,10 +238,11 @@ windows in the supported image are:
 | `0x80032718` | `0040F809` | `8C420014 00000000 [0040F809] 00003821 0800CA8D 00000000` | Run stop animation |
 | `0x8003291C` | `0C0193AC` | `00000000 8E050114 [0C0193AC] 24060001 8E020058 00000000` | Run facing and directional animation |
 | `0x80075174` | `8C49002C` | `00000000 8C480028 [8C49002C] 8C4A0030 AFA80018 AFA9001C` | current-yaw snapshot before command direction |
+| `0x8006AE54` | `8E650100` | `00C0A021 0282102A 10400007 00000000 [8E650100] 00000000 10A00003 02602021 0C0192E6` | Punch/Kick targeting-window facing |
 
 Every hook can re-execute or emulate its one displaced instruction and has an
 unambiguous rejoin. Stock/off behavior therefore remains byte-for-byte
-expressible. Installation must verify all twelve complete windows before changing
+expressible. Installation must verify all thirteen complete windows before changing
 any site and must roll the entire set back if one write fails.
 
 The old `0x80075398` action trampoline and `0x80034010` Strafe-target
@@ -254,7 +262,7 @@ guest-extension code/data arena at `0x80004800`–`0x800057FF`:
 - the boot executable and all four exact retail overlays have zero direct
   J/JAL, GP-relative, or LUI-plus-immediate references into the proposed range.
 
-The arena holds the twelve trampoline bodies, a shared ownership/animation helper,
+The arena holds the thirteen trampoline bodies, shared ownership/animation helpers,
 and only transient words such as last published mode. No retail object is
 grown, no save structure changes, and no unused Player field is guessed.
 
@@ -272,7 +280,7 @@ the direct-pad buffer. The wire mode collapses to `0=off`, `1=mouse`; the
   context's heading untouched.
 - Focus loss, pause, photo mode, invalid object graphs, and non-player control
   discard motion and release capture exactly as before.
-- Quick saves normalize all twelve sites and the extension arena out of the saved
+- Quick saves normalize all thirteen sites and the extension arena out of the saved
   runtime. Load reapplies the fingerprinted set transactionally and reseeds
   transient yaw/lease state from the live Player.
 - Any fingerprint mismatch, invalid pointer, unknown state, or malformed live
@@ -304,13 +312,16 @@ emulator tests, fingerprint checks, and executable-control-flow audit cover:
     the ordinary runtime test coverage;
 12. removal/rejection of `character_relative` in config, F10 cycling,
     notifications, documentation, and tests.
+13. Punch/Kick host-lease continuity, no-target mouse aiming, exact stock/off
+    and NPC fallback, first-node authored-offset capture, and chained-node
+    `turnDelta` accumulation.
 
 ## Feasibility conclusion
 
 The architecture is feasible without taking over the input subsystem and
 without patching every consumer. It uses retail's existing travel field,
 official body field, action decoder, Move state, force paths, context handlers,
-and authored directional animation assets. Twelve resident, reversible seams
+and authored directional animation assets. Thirteen resident, reversible seams
 add the missing ownership contract at the points where retail previously
 assumed body and travel were identical.
 

@@ -81,7 +81,7 @@ maximum rate, and acceleration limits. The bounded yaw and enabled/off mode
 occupy bytes 4-8 of retail's 34-byte direct-pad buffer, which the digital
 `0x41` driver ignores.
 
-Twelve reversible, surrounding-window-fingerprinted guest trampolines consume
+Thirteen reversible, surrounding-window-fingerprinted guest trampolines consume
 the extension. `faceAngle` remains camera-relative travel and `orientation.y`
 remains official body/combat heading. Stand, ambient Player idle, Run, Jump,
 Fall, and launcher Flip states lease body heading to the mouse;
@@ -90,8 +90,13 @@ travel or aim for the action classes that require it, while all other contexts
 retain authored ownership. Air physics continues to consume travel yaw, while
 the repeated retail air-facing calls are suppressed during the lease. Move/
 action 2 and full-speed Run remain intact. Run selects the retail directional
-animations without entering Strafe. Quick saves normalize all twelve sites and
-their separate guest-extension arena, then fingerprint-reapply them on load.
+animations without entering Strafe. A combat seam at
+`ProcessGenericFightingMove+0x48` replaces automatic foe-facing with mouse yaw
+only during the existing punch/kick targeting window. It carries retail
+`turnDelta` as a separate combo offset, then leaves active/recovery facing,
+root motion, hitboxes, grabs, counters, and throws authored. Quick saves
+normalize all thirteen sites and their separate guest-extension arena, then
+fingerprint-reapply them on load.
 The guest remains the only writer of Player state.
 
 Guest execution stays inside `R3000Runtime::runBatch` until a machine boundary:
