@@ -95,8 +95,9 @@ The tuning values are degrees per second and degrees per second squared.
   entering the slower, targeting-aware Strafe state.
 - `off`: stock movement and facing, no mouse actions, and no cursor capture.
 
-Stand, Run, running/standing Jump, Fall/HardFall, and launcher Flip variants
-grant mouse ownership of body yaw. Their movement force remains
+Stand, Jackie's ambient idle sequence, Run, running/standing Jump,
+Fall/HardFall, and launcher Flip variants grant mouse ownership of body yaw.
+Their movement force remains
 camera-relative through `faceAngle`; attacks, interactions, grounded traversal,
 reactions, and scripts take explicit ownership at action transitions. Relative
 orientation gestures are discarded while those contexts own facing and

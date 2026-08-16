@@ -2260,8 +2260,8 @@ Run causes severe motion discomfort. The exhaustive consumer and ownership
 inventory is recorded in [MOUSE_HEADING_AUDIT.md](MOUSE_HEADING_AUDIT.md).
 The proven replacement architecture is in
 [MOUSE_DUAL_HEADING_DESIGN.md](MOUSE_DUAL_HEADING_DESIGN.md). It keeps
-camera-relative Run and Move, gives free locomotion and ordinary airborne
-states a scoped mouse-facing lease, normalizes context ownership at Player
+camera-relative Run and Move, gives free locomotion, ambient Player idle, and
+ordinary airborne states a scoped mouse-facing lease, normalizes context ownership at Player
 action transitions, and reuses directional Strafe animations without entering
 Strafe state. The two-hook
 implementation described above remains useful prototype evidence, not the
@@ -2282,9 +2282,9 @@ each raw `atan2` result. Configurable angular speed and acceleration prevent
 tight circles and the 16-bit zero crossing from creating unbounded turns;
 continuous gesture-angle unwrapping preserves direction and a half-turn lead
 cap preserves every target direction without banking extra revolutions.
-Expected locomotion/air body-travel splits remain console-only; persistent
-suspicious contextual splits retain transition/rate-limited diagnostics and a
-delayed on-screen notification.
+Expected lease and retail-owned body/travel splits remain console-only;
+persistent splits in explicitly committed states retain transition/rate-limited
+diagnostics and a delayed on-screen notification.
 
 Emulator tests execute all action-ownership classes, current-frame yaw,
 context discard/reseed, four directional Run sectors, stop animation, stock

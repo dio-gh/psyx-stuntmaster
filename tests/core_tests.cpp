@@ -121,6 +121,13 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
         previous_lapped_yaw = lapped_yaw.desiredYaw();
     }
 
+    stuntmaster::game::MouseYawController idle_yaw{config};
+    context.player_yaw = 0U;
+    context.action_state = 3U;
+    idle_yaw.update(context, 0, 0, 60U);
+    idle_yaw.update(context, 100, 0, 60U);
+    assert(idle_yaw.accepted() && idle_yaw.desiredYaw() != 0U);
+
     context.action_state = 6U;
     const auto airborne_entry_yaw = yaw.desiredYaw();
     yaw.update(context, -100, 0, 60U);
@@ -148,9 +155,21 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     context.action_state = 13U;
     assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
            MouseHeadingSplitKind::free_lease);
+    context.action_state = 3U;
+    assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
+           MouseHeadingSplitKind::free_lease);
     context.action_state = 32U;
     diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
-    assert(diagnostic.kind == MouseHeadingSplitKind::context);
+    assert(diagnostic.kind == MouseHeadingSplitKind::retail_owned);
+    context.action_state = 23U;
+    assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
+           MouseHeadingSplitKind::retail_owned);
+    for (const auto state : {12U, 19U, 20U, 21U, 22U, 30U}) {
+        context.action_state = state;
+        diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
+        assert(diagnostic.kind ==
+               MouseHeadingSplitKind::committed_context);
+    }
     context.travel_yaw = context.player_yaw;
     assert(!stuntmaster::game::mouseHeadingDiagnostic(context).split());
 
@@ -321,6 +340,14 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     runUntil(0x80075174U, 0x8007517CU);
     assert(runtime.read32(player + 0x2CU, value) && value == 0x5A5AU);
     assert(runtime.state().gpr[9] == 0x5A5AU);
+    assert(runtime.write32(player + 0x164U, 3U));
+    assert(runtime.write32(0x800DFA34U, 0x6B6BU));
+    runtime.reset(0x80075174U, 0U, 0x801F0000U);
+    runtime.setRegister(2, player);
+    runtime.setRegister(28, 0x800DC94CU);
+    runUntil(0x80075174U, 0x8007517CU);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x6B6BU);
+    assert(runtime.state().gpr[9] == 0x6B6BU);
     assert(runtime.write32(player + 0x164U, 32U));
     assert(runtime.write32(player + 0x2CU, 0x7777U));
     assert(runtime.write32(0x800DFA34U, 0x9999U));

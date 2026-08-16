@@ -83,8 +83,9 @@ occupy bytes 4-8 of retail's 34-byte direct-pad buffer, which the digital
 
 Twelve reversible, surrounding-window-fingerprinted guest trampolines consume
 the extension. `faceAngle` remains camera-relative travel and `orientation.y`
-remains official body/combat heading. Stand, Run, Jump, Fall, and launcher
-Flip states lease body heading to the mouse; `Player::SetActionState` commits
+remains official body/combat heading. Stand, ambient Player idle, Run, Jump,
+Fall, and launcher Flip states lease body heading to the mouse;
+`Player::SetActionState` commits
 travel or aim for the action classes that require it, while all other contexts
 retain authored ownership. Air physics continues to consume travel yaw, while
 the repeated retail air-facing calls are suppressed during the lease. Move/

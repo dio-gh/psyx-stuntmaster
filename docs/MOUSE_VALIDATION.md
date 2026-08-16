@@ -39,16 +39,18 @@ Use this pass:
    fall, slope, table roll, pushable object, ladder, ledge, wall, pole, and
    explicit Strafe where available. Context entry must claim the appropriate
    heading and retain its stock movement, targeting, collision, and speed.
-   Returning to Stand/Run must not replay mouse motion made during the context.
+   Returning to a mouse-facing lease must not replay mouse motion made during
+   the context. Jackie's ambient idle animation must remain mouse-responsive.
    In particular, jumping while facing opposite the held travel direction must
    preserve mouse-facing through takeoff, apex, fall, and landing; jump force
    must still follow the held camera-relative direction.
-7. Watch the heading diagnostic. Expected locomotion/airborne splits are
-   console-only. A split that remains continuously in a retail-owned context
-   for half a second shows `HEADING SPLIT: CONTEXT`; brief combat/action
-   transitions no longer interrupt play with notifications. Console lines
-   include state, body yaw, travel yaw, and signed delta, and a continuing
-   split is rate-limited to once per second.
+7. Watch the heading diagnostic. Expected mouse-lease and normal retail-owned
+   splits—including ledge latch and combat—are console-only and labelled
+   `free_lease` or `retail_owned`. Only a split in a state that explicitly
+   committed the headings, such as push, roll, slope, or hotfoot, can show
+   `HEADING SPLIT: COMMITTED` after half a second. Console lines include state,
+   body yaw, travel yaw, and signed delta, and a continuing split is
+   rate-limited to once per second.
 8. Press F10 for off. Capture and mouse actions should stop, and ordinary stock
    movement/facing should return without a snap. Press F10 again to restore
    camera-relative mouse control.

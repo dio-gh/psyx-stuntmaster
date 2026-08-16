@@ -139,14 +139,25 @@ constexpr std::uint32_t jump_face_second_arena = 0x80004F60U;
 constexpr std::uint32_t fall_face_site = 0x800323D8U;
 constexpr std::uint32_t fall_face_arena = 0x80005100U;
 
-// Stand, Run, player running/standing jumps, Fall/HardFall, and launcher
-// Flip variants retain an independent visible/combat heading. All are below
-// state 31, allowing the guest bodies to use one compact bit mask.
-constexpr std::uint32_t free_facing_state_mask = 0x00036542U;
+// Stand, ambient Player idle, Run, player running/standing jumps,
+// Fall/HardFall, and launcher Flip variants retain an independent
+// visible/combat heading. All are below state 31, allowing the guest bodies to
+// use one compact bit mask.
+constexpr std::uint32_t free_facing_state_mask = 0x0003654AU;
+// These authored travel/contact states explicitly commit the two headings and
+// should keep them aligned. Other non-lease states may intentionally split the
+// fields: ledge latch uses body for the ledge normal and travel for the command
+// decision, while combat/target handlers author their own turns after entry.
+constexpr std::uint32_t committed_heading_state_mask = 0x40781000U;
 [[nodiscard]] constexpr bool freeFacingState(
     std::uint32_t action_state) noexcept {
     return action_state < 31U &&
         (free_facing_state_mask & (1U << action_state)) != 0U;
+}
+[[nodiscard]] constexpr bool committedHeadingState(
+    std::uint32_t action_state) noexcept {
+    return action_state < 31U &&
+        (committed_heading_state_mask & (1U << action_state)) != 0U;
 }
 
 constexpr std::array<std::uint32_t, 9U> ownership_window{
@@ -492,9 +503,13 @@ MouseHeadingDiagnostic mouseHeadingDiagnostic(
         angle16(context.player_yaw), angle16(context.travel_yaw),
         signedAngleDelta(context.player_yaw, context.travel_yaw)};
     if (result.signed_delta != 0) {
-        result.kind = freeFacingState(context.action_state)
-            ? MouseHeadingSplitKind::free_lease
-            : MouseHeadingSplitKind::context;
+        if (freeFacingState(context.action_state)) {
+            result.kind = MouseHeadingSplitKind::free_lease;
+        } else if (committedHeadingState(context.action_state)) {
+            result.kind = MouseHeadingSplitKind::committed_context;
+        } else {
+            result.kind = MouseHeadingSplitKind::retail_owned;
+        }
     }
     return result;
 }

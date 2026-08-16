@@ -1866,11 +1866,21 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         (category_changed || state_changed ||
                          scheduled_vblanks >=
                              next_heading_diagnostic_vblank)) {
-                        const auto expected = diagnostic.kind ==
-                            stuntmaster::game::
-                                MouseHeadingSplitKind::free_lease;
+                        const auto ownership = [&diagnostic] {
+                            using SplitKind = stuntmaster::game::
+                                MouseHeadingSplitKind;
+                            switch (diagnostic.kind) {
+                            case SplitKind::free_lease: return "free_lease";
+                            case SplitKind::retail_owned:
+                                return "retail_owned";
+                            case SplitKind::committed_context:
+                                return "committed_context";
+                            case SplitKind::aligned: break;
+                            }
+                            return "aligned";
+                        }();
                         std::cerr << "mouse_heading=split ownership="
-                                  << (expected ? "free_lease" : "context")
+                                  << ownership
                                   << " state=" << std::dec
                                   << diagnostic.action_state << " body=0x"
                                   << std::hex << diagnostic.body_yaw
@@ -1890,7 +1900,8 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                                   << std::dec << '\n';
                     }
                     if (diagnostic.kind == stuntmaster::game::
-                                               MouseHeadingSplitKind::context) {
+                                               MouseHeadingSplitKind::
+                                                   committed_context) {
                         if (!context_split_started_vblank) {
                             context_split_started_vblank = scheduled_vblanks;
                             context_split_notified = false;
@@ -3450,7 +3461,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         break;
                     case QuickSaveNotification::mouse_heading_split_context:
                         live_presenter->showNotification(
-                            "HEADING SPLIT: CONTEXT");
+                            "HEADING SPLIT: COMMITTED");
                         break;
                     case QuickSaveNotification::none:
                         break;

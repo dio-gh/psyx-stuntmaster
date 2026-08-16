@@ -1,6 +1,6 @@
 # Mouse dual-heading design
 
-Status: Phase 4.1 air-ownership correction implemented and emulator-tested,
+Status: Phase 4.2 idle-lease and diagnostic correction implemented and emulator-tested,
 2026-08-16. This document records the selected architecture and its executable
 realization. Campaign and feel validation remain the Phase 4 gate.
 
@@ -12,9 +12,9 @@ an explicit, narrow lifetime:
 - `Humanoid+0x114` (`faceAngle`) remains camera-relative travel intent.
 - `Thing+0x2c` (`orientation.y`) is the official visible, combat, perception,
   pickup, and interaction heading.
-- Player Stand, Run, running/standing Jump, Fall/HardFall, and launcher Flip
-  variants hold the **free-facing lease**, in which the fields may differ and
-  mouse yaw owns `orientation.y`.
+- Player Stand, ambient idle state `3`, Run, running/standing Jump,
+  Fall/HardFall, and launcher Flip variants hold the **free-facing lease**, in
+  which the fields may differ and mouse yaw owns `orientation.y`.
 - Every other action owns its authored/context heading. On an ownership
   transition the guest extension either commits aim, commits travel, or leaves
   the transition to the retail surface/target code, then stops applying mouse
@@ -80,7 +80,7 @@ slot before stack allocation.
 
 | Ownership class | Destination states | Entry normalization |
 | --- | --- | --- |
-| Free-facing | Stand `1`, player running jump `6`, standing jump `8`, Run `10`, Fall/HardFall `13`–`14`, Flip `16`–`17` | preserve `faceAngle`; mouse may own `orientation.y` |
+| Free-facing | Stand `1`, ambient Player idle `3`, player running jump `6`, standing jump `8`, Run `10`, Fall/HardFall `13`–`14`, Flip `16`–`17` | preserve `faceAngle`; mouse may own `orientation.y` |
 | Travel-commit | dive roll `12`, Slope Slide `20`, Table Roll `21`, Hotfoot `30` | copy `faceAngle` to `orientation.y`, then retail owns both |
 | Aim/contact-commit | Push Object `19`, Push `22`, combat/interaction range `32`–`45` | copy `orientation.y` to `faceAngle`, then retail owns both |
 | Context-retail | every other state, including explicit Strafe `11`, HardLand `15`, wall/ledge/ladder/pole states, reactions, death, and NIS `73` | do not alter either field; the existing caller/handler owns alignment |
@@ -101,6 +101,11 @@ Concrete consequences:
   from mouse-facing body yaw, after which fighting/target code may author turns;
 - ledges, ladders, poles, wall jumps, hits, scripts, and NIS retain their
   existing alignment code without a mouse-state exception.
+
+Player state `3` is the long ambient idle sequence selected by Stand's idle
+timer (ReChan's historical name `AS_WALL_JUMP_TAUNT` is misleading here).
+Its `_InactiveIdle` handler does not write heading, so it safely retains the
+mouse lease and returns to Stand normally when the animation completes.
 
 While a context owns heading, the host keeps mouse capture and semantic button
 input active but discards relative orientation gestures. When a leased state
@@ -193,12 +198,19 @@ Context entry discards target and velocity; free-lease re-entry reseeds from
 live body yaw before accepting another gesture.
 
 The host also compares official body yaw with travel yaw while mouse mode is
-active. A split during any leased locomotion/air state is classified as
-expected `free_lease`; a split in any other action is classified as suspicious
-`context`. Expected splits are console-only. An unexpected context split must
-remain continuous for half a second before an on-screen message appears. The
-console logs state plus both angles and the signed delta on transitions and at
-most once per second for a persistent split.
+active. It assigns a split one of three ownership meanings:
+
+- `free_lease`: the mouse intentionally owns body independently;
+- `retail_owned`: the action intentionally gives the fields different roles,
+  such as ledge latch's ledge-normal body plus directional-command travel, or
+  combat's target-authored turns after entry;
+- `committed_context`: dive roll, push/contact, slope slide, table roll, or
+  hotfoot explicitly committed the headings and should keep them aligned.
+
+The first two categories are console-only. A committed-context split must
+remain continuous for half a second before `HEADING SPLIT: COMMITTED` appears.
+The console logs state plus both angles and the signed delta on transitions and
+at most once per second for a persistent split.
 
 ## Exact hook proof
 
