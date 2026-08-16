@@ -190,13 +190,24 @@ public:
     static constexpr std::uint32_t menu_object_arena_base = 0x80004000U;
     static constexpr std::uint32_t menu_object_arena_size = 2U * 1024U;
 
+    // Mouse locomotion needs several independent, always-resident ownership
+    // trampolines. Keep them out of the already partitioned general patch
+    // arena and out of the host-menu objects. Static retail-image scans cover
+    // this otherwise unused kernel-reserved span.
+    static constexpr std::uint32_t guest_extension_arena_base = 0x80004800U;
+    static constexpr std::uint32_t guest_extension_arena_size = 4U * 1024U;
+
     static_assert(
         menu_object_arena_base >= patch_arena_base + patch_arena_size,
         "the menu object arena must not overlap the patch arena");
     static_assert(
         menu_object_arena_base + menu_object_arena_size <=
+            guest_extension_arena_base,
+        "the menu object arena must not overlap the guest extension arena");
+    static_assert(
+        guest_extension_arena_base + guest_extension_arena_size <=
             interrupt_stack_top - interrupt_stack_size,
-        "the menu object arena must not overlap the interrupt stack");
+        "the guest extension arena must not overlap the interrupt stack");
 
     R3000Runtime();
     R3000Runtime(const R3000Runtime& other);

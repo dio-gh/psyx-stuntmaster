@@ -214,10 +214,32 @@ void applyInputConfig(
             mouse_config.initial_mode = *mode;
             matched = true;
         }
+        const auto parseMouseTuning = [&](std::uint32_t& destination,
+                                          std::uint32_t minimum,
+                                          std::uint32_t maximum) {
+            std::uint32_t parsed = 0U;
+            const auto result = std::from_chars(
+                value.data(), value.data() + value.size(), parsed);
+            if (result.ec != std::errc{} ||
+                result.ptr != value.data() + value.size() ||
+                parsed < minimum || parsed > maximum) {
+                throw std::runtime_error{
+                    "invalid mouse turn setting on line " +
+                    std::to_string(line_number)};
+            }
+            destination = parsed;
+            matched = true;
+        };
+        if (!matched && key == "mouse.turn_rate") {
+            parseMouseTuning(mouse_config.maximum_turn_rate, 30U, 1'440U);
+        }
+        if (!matched && key == "mouse.turn_acceleration") {
+            parseMouseTuning(mouse_config.turn_acceleration, 60U, 10'000U);
+        }
         if (!matched && key == "mouse.sensitivity") {
             // Accepted for compatibility with input.ini files seeded by the
-            // first mouse-control build. Directional two-axis orientation has
-            // no scalar sensitivity: magnitude is discarded after atan2.
+            // first mouse-control build. The bounded turn controller uses
+            // explicit rate and acceleration settings instead.
             std::int32_t parsed = 0;
             const auto result = std::from_chars(
                 value.data(), value.data() + value.size(), parsed);

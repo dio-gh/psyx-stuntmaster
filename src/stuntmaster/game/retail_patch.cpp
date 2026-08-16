@@ -110,10 +110,21 @@ constexpr std::array<std::string_view, 25> widescreen_site_names{
     const auto word_count = patch.body.size() + 2U;
     const auto byte_count =
         static_cast<std::uint32_t>(word_count * sizeof(std::uint32_t));
-    if (byte_count > psx::R3000Runtime::patch_arena_size ||
-        patch.address < psx::R3000Runtime::patch_arena_base ||
-        patch.address - psx::R3000Runtime::patch_arena_base >
-            psx::R3000Runtime::patch_arena_size - byte_count) {
+    const auto fitsArena = [byte_count](
+                               std::uint32_t address,
+                               std::uint32_t base,
+                               std::uint32_t size) {
+        return byte_count <= size && address >= base &&
+            address - base <= size - byte_count;
+    };
+    if (!fitsArena(
+            patch.address,
+            psx::R3000Runtime::patch_arena_base,
+            psx::R3000Runtime::patch_arena_size) &&
+        !fitsArena(
+            patch.address,
+            psx::R3000Runtime::guest_extension_arena_base,
+            psx::R3000Runtime::guest_extension_arena_size)) {
         return false;
     }
     if (!jumpReaches(patch.site, patch.address) ||

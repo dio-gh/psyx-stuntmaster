@@ -758,8 +758,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         "mouse control refused: a retail input fingerprint "
                         "did not match"};
                 }
-                std::cout << "retail_patch=mouse_player_action\n"
-                             "retail_patch=mouse_strafe_target\n";
+                std::cout << "retail_patch=mouse_dual_heading_x6\n";
             }
             if (options->experimental_host_menu) {
                 retail_hle.setHostMenuWidescreenCull(
@@ -1088,10 +1087,12 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             const auto mouse_config = live_presenter
                 ? live_presenter->mouseControlConfig()
                 : stuntmaster::game::MouseControlConfig{};
-            stuntmaster::game::MouseYawController mouse_yaw;
-            mouse_yaw.setMode(mouse_config.initial_mode);
+            stuntmaster::game::MouseYawController mouse_yaw{mouse_config};
             std::optional<stuntmaster::game::MouseGameplayContext>
                 mouse_gameplay_context;
+            std::optional<stuntmaster::game::MouseHeadingDiagnostic>
+                previous_heading_diagnostic;
+            std::uint64_t next_heading_diagnostic_vblank{};
             // Packed rumble request from the guest worker: motor1 |
             // motor2 << 8 | duration_ms << 16. Zero means no active shake.
             // The main thread applies it to the SDL game controller.
@@ -1173,8 +1174,9 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 photo_simulation_frozen,
                 photo_simulation_running,
                 mouse_camera_relative,
-                mouse_character_relative,
                 mouse_off,
+                mouse_heading_split_free,
+                mouse_heading_split_context,
             };
             std::atomic<QuickSaveNotification> quick_save_notification{
                 QuickSaveNotification::none};
@@ -1707,6 +1709,8 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     false, std::memory_order_release);
                 mouse_yaw.abandon();
                 mouse_gameplay_context.reset();
+                previous_heading_diagnostic.reset();
+                next_heading_diagnostic_vblank = 0U;
                 latest_mouse_held_actions.store(
                     0U, std::memory_order_release);
                 (void)latched_mouse_pressed_actions.exchange(
@@ -1834,19 +1838,68 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         mode == stuntmaster::game::
                                     MouseMovementMode::camera_relative
                             ? QuickSaveNotification::mouse_camera_relative
-                        : mode == stuntmaster::game::
-                                      MouseMovementMode::character_relative
-                            ? QuickSaveNotification::mouse_character_relative
                             : QuickSaveNotification::mouse_off,
                         std::memory_order_release);
                 }
                 mouse_gameplay_context =
                     stuntmaster::game::readMouseGameplayContext(
                         runtime, free_camera.active());
+                if (mouse_gameplay_context &&
+                    mouse_yaw.mode() == stuntmaster::game::
+                                            MouseMovementMode::camera_relative) {
+                    const auto diagnostic =
+                        stuntmaster::game::mouseHeadingDiagnostic(
+                            *mouse_gameplay_context);
+                    const auto changed = !previous_heading_diagnostic ||
+                        diagnostic.kind != previous_heading_diagnostic->kind ||
+                        diagnostic.action_state !=
+                            previous_heading_diagnostic->action_state;
+                    if (diagnostic.split() &&
+                        (changed || scheduled_vblanks >=
+                                        next_heading_diagnostic_vblank)) {
+                        const auto expected = diagnostic.kind ==
+                            stuntmaster::game::
+                                MouseHeadingSplitKind::free_lease;
+                        std::cerr << "mouse_heading=split ownership="
+                                  << (expected ? "free_lease" : "context")
+                                  << " state=" << std::dec
+                                  << diagnostic.action_state << " body=0x"
+                                  << std::hex << diagnostic.body_yaw
+                                  << " travel=0x" << diagnostic.travel_yaw
+                                  << std::dec << " delta="
+                                  << diagnostic.signed_delta << '\n';
+                        next_heading_diagnostic_vblank = scheduled_vblanks +
+                            (high_frequency_active
+                                 ? high_frequency_schedule.vblank_rate
+                                 : retail_schedule.vblank_rate);
+                        if (changed) {
+                            quick_save_notification.store(
+                                expected
+                                    ? QuickSaveNotification::
+                                          mouse_heading_split_free
+                                    : QuickSaveNotification::
+                                          mouse_heading_split_context,
+                                std::memory_order_release);
+                        }
+                    } else if (!diagnostic.split() &&
+                               previous_heading_diagnostic &&
+                               previous_heading_diagnostic->split()) {
+                        std::cerr << "mouse_heading=aligned state=" << std::dec
+                                  << diagnostic.action_state << " yaw=0x"
+                                  << std::hex << diagnostic.body_yaw
+                                  << std::dec << '\n';
+                    }
+                    previous_heading_diagnostic = diagnostic;
+                } else {
+                    previous_heading_diagnostic.reset();
+                }
                 mouse_yaw.update(
                     mouse_gameplay_context,
                     gameplay_mouse_x.exchange(0, std::memory_order_acq_rel),
-                    gameplay_mouse_y.exchange(0, std::memory_order_acq_rel));
+                    gameplay_mouse_y.exchange(0, std::memory_order_acq_rel),
+                    high_frequency_active
+                        ? high_frequency_schedule.vblank_rate
+                        : retail_schedule.vblank_rate);
                 const auto mouse_accepted = mouse_yaw.accepted();
                 if (!mouse_accepted) {
                     mouse_gameplay_context.reset();
@@ -3365,12 +3418,16 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         live_presenter->showNotification(
                             "MOUSE: CAMERA-RELATIVE MOVE");
                         break;
-                    case QuickSaveNotification::mouse_character_relative:
-                        live_presenter->showNotification(
-                            "MOUSE: CHARACTER-RELATIVE MOVE");
-                        break;
                     case QuickSaveNotification::mouse_off:
                         live_presenter->showNotification("MOUSE CONTROL OFF");
+                        break;
+                    case QuickSaveNotification::mouse_heading_split_free:
+                        live_presenter->showNotification(
+                            "HEADING SPLIT: FREE LEASE");
+                        break;
+                    case QuickSaveNotification::mouse_heading_split_context:
+                        live_presenter->showNotification(
+                            "HEADING SPLIT: CONTEXT");
                         break;
                     case QuickSaveNotification::none:
                         break;

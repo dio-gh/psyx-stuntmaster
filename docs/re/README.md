@@ -2262,9 +2262,32 @@ The proven replacement architecture is in
 [MOUSE_DUAL_HEADING_DESIGN.md](MOUSE_DUAL_HEADING_DESIGN.md). It keeps
 camera-relative Run and Move, gives ordinary Stand/Run a scoped mouse-facing
 lease, normalizes context ownership at Player action transitions, and reuses
-directional Strafe animations without entering Strafe state. The implementation
-described above remains useful prototype evidence, not the shipping movement
-architecture.
+directional Strafe animations without entering Strafe state. The two-hook
+implementation described above remains useful prototype evidence, not the
+shipping movement architecture.
+
+### Dual-heading mouse locomotion — implemented and emulator-tested
+
+The final implementation replaces the prototype with six transactional,
+fingerprinted resident seams: action ownership at `0x800303D8`, Stand movement
+at `0x80031534`, Stand final facing at `0x800319A8`, Run stop animation at
+`0x80032718`, Run facing/animation at `0x8003291C`, and the input yaw snapshot
+at `0x80075174`. Bodies live in the separately proved guest-extension arena
+`0x80004800`–`0x800057FF`; quick saves normalize and rehydrate the entire set.
+
+The host publishes a bounded, shortest-arc mouse yaw rather than snapping to
+each raw `atan2` result. Configurable angular speed and acceleration prevent
+tight circles and the 16-bit zero crossing from creating unbounded turns;
+continuous gesture-angle unwrapping preserves direction and a quarter-turn
+lead cap prevents queued spins.
+Expected Stand/Run body/travel splits and suspicious contextual splits are
+distinguished in transition/rate-limited diagnostics.
+
+Emulator tests execute all action-ownership classes, current-frame yaw,
+context discard/reseed, four directional Run sectors, stop animation, stock
+fallbacks, and transactional install/revert. The remaining boundary is the
+Phase 4 live campaign and feel pass in
+[MOUSE_VALIDATION.md](../MOUSE_VALIDATION.md).
 
 Use the committed disassembler for focused verification:
 

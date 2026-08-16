@@ -1,7 +1,8 @@
 # Mouse dual-heading design
 
-Status: Phase 2 complete, 2026-08-16. This document selects and proves the
-replacement architecture. Gameplay implementation is deferred to Phase 3.
+Status: Phase 3 implemented and emulator-tested, 2026-08-16. This document
+records the selected architecture and its executable realization. Campaign
+and feel validation remain the Phase 4 gate.
 
 ## Decision
 
@@ -68,9 +69,12 @@ injection remains.
 
 ## Ownership transitions
 
-`Player::SetActionState` (`0x800303BC`) is the single ownership boundary. A
-fingerprinted prologue trampoline classifies the requested destination before
-executing the displaced retail prologue.
+`Player::SetActionState` begins at `0x800303BC` and is the single ownership
+boundary. The fingerprinted trampoline is installed at `0x800303D8`, after
+the stack and saved-register frame is established, and classifies the requested
+destination before continuing the retail prologue. Hooking the first prologue
+word is unsafe: the following register store would execute in the jump delay
+slot before stack allocation.
 
 | Ownership class | Destination states | Entry normalization |
 | --- | --- | --- |
@@ -143,6 +147,34 @@ that stop transition. Mouse mode substitutes the authored Strafe idle animation
 body/travel mismatch. Explicit dive rolls use different call sites and are not
 affected.
 
+## Bounded mouse-heading controller
+
+The two-axis gesture still selects the absolute camera-relative target with
+`cameraYaw + atan2(x, -y)`, but target selection no longer rotates Jackie
+directly. A damped host controller requests angular velocity proportional to
+the shortest wrapped target error, then clamps both velocity and acceleration
+before integrating one emulated VBlank. This supplies two physical limits:
+
+- `mouse.turn_rate` caps sustained rotation in degrees per second;
+- `mouse.turn_acceleration` caps changes in angular velocity in degrees per
+  second squared.
+
+The shortest-arc error treats values immediately below and above the 16-bit
+zero point as neighbors, so crossing `atan2`'s representation boundary cannot
+command a nearly full-circle reversal. A stopped mouse completes the bounded
+turn toward the last target. Consecutive non-zero gesture samples are unwrapped
+against each other, rather than against the lagging body, so a fast circle
+cannot reverse merely by lapping the controller. Target lead is capped at one
+quarter-turn, preventing that circle from banking an arbitrarily long spin.
+Context entry discards target and velocity; free-lease re-entry reseeds from
+live body yaw before accepting another gesture.
+
+The host also compares official body yaw with travel yaw while mouse mode is
+active. A split during Stand/Run is classified as expected `free_lease`; a
+split in any other action is classified as suspicious `context`. Transitions
+show an on-screen message, and the console logs state plus both angles and the
+signed delta, rate-limited to once per second for a persistent split.
+
 ## Exact hook proof
 
 All selected sites are in the always-resident boot executable. Their local
@@ -150,7 +182,7 @@ windows in the supported image are:
 
 | Site | Retail word | Neighboring proof | Purpose |
 | --- | ---: | --- | --- |
-| `0x800303BC` | `27BDFFB8` | `03E00008 00000000 [27BDFFB8] AFB1002C 00808821 AFB40038` | action ownership transition |
+| `0x800303D8` | `AFBF0040` | `AFB40038 00A0A021 AFB30034 00C09821 [AFBF0040] AFB5003C AFB20030 AFB00028 8E220058` | action ownership transition |
 | `0x80031534` | `14430024` | `8E020114 00000000 [14430024] 00000000 8E020268 00000000` | Stand movement comparison |
 | `0x800319A8` | `0C0193AC` | `00000000 8F850D6C [0C0193AC] 24060001 8E040050 00000000` | Stand final facing |
 | `0x80032718` | `0040F809` | `8C420014 00000000 [0040F809] 00003821 0800CA8D 00000000` | Run stop animation |
@@ -205,8 +237,8 @@ the direct-pad buffer. The wire mode collapses to `0=off`, `1=mouse`; the
 
 ## Phase 3 executable acceptance matrix
 
-The implementation gate is not merely that the hooks run. Emulator-backed
-tests must prove:
+The implementation gate was not merely that the hooks ran. The combined
+emulator tests, fingerprint checks, and executable-control-flow audit cover:
 
 1. off-mode register, branch, RAM, action-bit, target, speed, and animation
    equivalence at every displaced site;
@@ -238,6 +270,7 @@ the missing ownership contract at the points where retail previously assumed
 body and travel were identical.
 
 The remaining uncertainty is gameplay feel rather than an unproven engine
-dependency: animation transitions and context handoffs require the Phase 3
-emulator suite followed by Phase 4 campaign play. No known static-system
+dependency. Animation transitions and context handoffs now have Phase 3
+emulator coverage; Phase 4 campaign play must exercise them across actual
+levels and tune the bounded turn controller. No known static-system
 inconsistency requires a different architecture.

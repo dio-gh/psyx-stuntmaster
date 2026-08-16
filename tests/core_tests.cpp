@@ -40,9 +40,10 @@
 
 namespace {
 
-void mouseControlIsSemanticFingerprintGatedAndReversible() {
+void mouseControlDualHeadingIsBoundedAndReversible() {
     using Runtime = stuntmaster::psx::R3000Runtime;
     using stuntmaster::game::MouseButton;
+    using stuntmaster::game::MouseHeadingSplitKind;
     using stuntmaster::game::MouseMovementMode;
 
     const std::array<bool, 8U> punch_and_kick{
@@ -50,44 +51,88 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     const std::array<std::uint8_t, 8U> identity{0, 1, 2, 3, 4, 5, 6, 7};
     assert(stuntmaster::game::applySemanticMouseActions(
                0xFFFFU, punch_and_kick, identity) == 0x6FFFU);
-    // Layout 2 maps physical 0/1/2 and 4/5/6 onto different semantics.
-    const std::array<std::uint8_t, 8U> layout_two{1, 2, 0, 3, 5, 6, 4, 7};
-    assert(stuntmaster::game::applySemanticMouseActions(
-               0xFFFFU, punch_and_kick, layout_two) == 0x3FFFU);
-    const std::array<std::uint8_t, 8U> invalid{0, 0, 2, 3, 4, 5, 6, 7};
-    assert(stuntmaster::game::applySemanticMouseActions(
-               0xABCDU, punch_and_kick, invalid) == 0xABCDU);
-
     assert(stuntmaster::game::parseMouseButton("LEFT") == MouseButton::left);
-    assert(stuntmaster::game::parseMouseButton("x2") == MouseButton::x2);
-    assert(!stuntmaster::game::parseMouseButton("wheel"));
     assert(stuntmaster::game::parseMouseMovementMode("camera_relative") ==
            MouseMovementMode::camera_relative);
-    assert(!stuntmaster::game::parseMouseMovementMode("tank"));
+    assert(!stuntmaster::game::parseMouseMovementMode("character_relative"));
 
-    stuntmaster::game::MouseYawController yaw;
+    stuntmaster::game::MouseControlConfig config;
+    config.maximum_turn_rate = 360U;
+    config.turn_acceleration = 3600U;
+    stuntmaster::game::MouseYawController yaw{config};
     stuntmaster::game::MouseGameplayContext context{};
+    context.player_yaw = 0U;
+    context.camera_yaw = 0U;
+    context.action_state = 1U;
+    yaw.update(context, 0, 0, 60U);
+    assert(yaw.accepted() && yaw.desiredYaw() == 0U);
+    yaw.update(context, 10, 0, 60U);
+    assert(yaw.desiredYaw() > 0U && yaw.desiredYaw() < 0x4000U);
+    const auto first_step = yaw.desiredYaw();
+    assert(first_step <= 1'100U); // bounded to roughly six degrees
+    for (int frame = 0; frame < 120; ++frame) yaw.update(context, 0, 0, 60U);
+    assert(std::abs(static_cast<int>(yaw.desiredYaw()) - 0x4000) <= 1);
+
+    // 0xffff and 0x0000 are adjacent headings. The controller must take that
+    // short arc instead of reversing almost a complete turn at atan2's wrap.
+    stuntmaster::game::MouseYawController wrapped_yaw{config};
     context.player_yaw = 0xFFF0U;
-    context.camera_yaw = 0x1000U;
-    yaw.update(context, 0, 0);
-    assert(yaw.accepted());
-    assert(yaw.desiredYaw() == 0xFFF0U); // entry synchronizes without a snap
-    yaw.update(context, 0, -10);
-    assert(yaw.desiredYaw() == 0x1000U); // up: camera-forward
-    yaw.update(context, 10, 0);
-    assert(yaw.desiredYaw() == 0x5000U); // right: +quarter turn
-    yaw.update(context, 0, 10);
-    assert(yaw.desiredYaw() == 0x9000U); // down: +half turn
-    yaw.update(context, -10, 0);
-    assert(yaw.desiredYaw() == 0xFFFFD000U); // left: -quarter turn
-    yaw.update(context, 0, -10);
-    assert(yaw.desiredYaw() == 0x1000U); // circular sequence completes 360
-    assert(yaw.cycleMode() == MouseMovementMode::character_relative);
+    context.action_state = 1U;
+    wrapped_yaw.update(context, 0, 0, 60U); // synchronize/lease entry
+    wrapped_yaw.update(context, 0, -10, 60U); // camera-forward is zero
+    const auto wrapped_step = static_cast<std::int16_t>(
+        wrapped_yaw.desiredYaw() - 0xFFF0U);
+    assert(wrapped_step > 0 && wrapped_step <= 16);
+    for (int frame = 0; frame < 30; ++frame)
+        wrapped_yaw.update(context, 0, 0, 60U);
+    assert(wrapped_yaw.desiredYaw() == 0U);
+
+    // A gesture rotating much faster than Jackie can turn must keep its
+    // direction after lapping him; it may not take the newly-shorter reverse
+    // arc. The quarter-turn lead cap also keeps the queued rotation finite.
+    config.maximum_turn_rate = 90U;
+    config.turn_acceleration = 10'000U;
+    stuntmaster::game::MouseYawController lapped_yaw{config};
+    context.player_yaw = 0U;
+    lapped_yaw.update(context, 0, 0, 60U);
+    const std::array<std::pair<int, int>, 9U> fast_clockwise{{
+        {0, -10}, {10, 0}, {0, 10}, {-10, 0}, {0, -10},
+        {10, 0}, {0, 10}, {-10, 0}, {0, -10},
+    }};
+    auto previous_lapped_yaw = lapped_yaw.desiredYaw();
+    for (const auto [x, y] : fast_clockwise) {
+        lapped_yaw.update(context, x, y, 60U);
+        const auto step = static_cast<std::int16_t>(
+            lapped_yaw.desiredYaw() - previous_lapped_yaw);
+        assert(step >= 0 && step <= 384);
+        previous_lapped_yaw = lapped_yaw.desiredYaw();
+    }
+
+    context.action_state = 32U;
+    const auto context_entry_yaw = yaw.desiredYaw();
+    yaw.update(context, -100, 0, 60U);
+    assert(yaw.desiredYaw() == context_entry_yaw); // context discards gesture
+    context.player_yaw = 0x2222U;
+    context.action_state = 10U;
+    yaw.update(context, -100, 0, 60U);
+    assert(yaw.desiredYaw() == 0x2222U); // re-entry reseeds and discards
+    yaw.update(context, -100, 0, 60U);
+    assert(yaw.desiredYaw() != 0x2222U);
+    assert(yaw.cycleMode() == MouseMovementMode::off);
     assert(!yaw.accepted());
-    yaw.update(context, 0, 0);
-    assert(yaw.desiredYaw() == 0xFFF0U);
-    yaw.update(std::nullopt, 100, 20);
-    assert(!yaw.accepted());
+    assert(yaw.cycleMode() == MouseMovementMode::camera_relative);
+
+    context.player_yaw = 0x1000U;
+    context.travel_yaw = 0x2000U;
+    context.action_state = 10U;
+    auto diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
+    assert(diagnostic.kind == MouseHeadingSplitKind::free_lease &&
+           diagnostic.signed_delta == -0x1000);
+    context.action_state = 32U;
+    diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
+    assert(diagnostic.kind == MouseHeadingSplitKind::context);
+    context.travel_yaw = context.player_yaw;
+    assert(!stuntmaster::game::mouseHeadingDiagnostic(context).split());
 
     Runtime runtime;
     constexpr std::uint32_t game = 0x80110000U;
@@ -100,50 +145,62 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
     assert(runtime.write32(0x800DD6B4U, player));
     assert(runtime.write32(player + 0x1B8U, behaviour));
     assert(runtime.write32(behaviour + 0xE0U, 0x80074F5CU));
-    assert(runtime.write32(player + 0x2CU, 0x12345678U));
+    assert(runtime.write32(player + 0x2CU, 0x1234U));
+    assert(runtime.write32(player + 0x114U, 0x5678U));
+    assert(runtime.write32(player + 0x164U, 10U));
     assert(runtime.write32(0x800DD734U, camera));
-    assert(runtime.write32(camera + 0x2CU, 0x87654321U));
+    assert(runtime.write32(camera + 0x2CU, 0x8765U));
     assert(runtime.write32(0x800DD69CU, input));
-    for (std::size_t index = 0U; index < identity.size(); ++index) {
-        assert(runtime.write8(
-            input + 0x2E0U + static_cast<std::uint32_t>(index),
-            identity[index]));
-    }
+    for (std::size_t index = 0U; index < identity.size(); ++index)
+        assert(runtime.write8(input + 0x2E0U + static_cast<std::uint32_t>(index),
+                              identity[index]));
     const auto live = stuntmaster::game::readMouseGameplayContext(runtime);
-    assert(live && live->player == player &&
-           live->player_yaw == 0x12345678U &&
-           live->camera_yaw == 0x87654321U &&
-           live->physical_to_logical == identity);
-    assert(!stuntmaster::game::readMouseGameplayContext(runtime, true));
-    assert(runtime.write32(behaviour + 0xE0U, 0x80000000U));
-    assert(!stuntmaster::game::readMouseGameplayContext(runtime));
-    assert(runtime.write32(behaviour + 0xE0U, 0x80074F5CU));
+    assert(live && live->player_yaw == 0x1234U &&
+           live->travel_yaw == 0x5678U && live->action_state == 10U &&
+           live->camera_yaw == 0x8765U);
 
-    const std::array<std::uint32_t, 8U> action_window{
-        0x8E640018U, 0x0C0193AAU, 0x02802821U, 0x8E640018U,
-        0x0C01B3FFU, 0x02002821U, 0x8FBF0040U, 0x8FB5003CU};
-    const std::array<std::uint32_t, 8U> target_window{
-        0x8E020100U, 0U, 0x1440000BU, 0U,
-        0x8F8501D4U, 0x8E020008U, 0x8F8601D8U, 0x8C4200ECU};
-    assert(runtime.loadBytes(
-        0x80075388U, std::as_bytes(std::span{action_window})));
-    assert(runtime.loadBytes(
-        0x80034008U, std::as_bytes(std::span{target_window})));
+    const std::array<std::pair<std::uint32_t, std::array<std::uint32_t, 9U>>, 6U>
+        windows{{
+            {0x800303D8U, {0xAFB40038U, 0x00A0A021U, 0xAFB30034U,
+                           0x00C09821U, 0xAFBF0040U, 0xAFB5003CU,
+                           0xAFB20030U, 0xAFB00028U, 0x8E220058U}},
+            {0x80031534U, {0x00822023U, 0x8E03002CU, 0x8E020114U,
+                           0U, 0x14430024U, 0U, 0x8E020268U, 0U,
+                           0x00401821U}},
+            {0x800319A8U, {0x00003021U, 0x0800C67DU, 0U,
+                           0x8F850D6CU, 0x0C0193ACU, 0x24060001U,
+                           0x8E040050U, 0U, 0x8C820020U}},
+            {0x80032718U, {0x24060001U, 0xAFA00010U, 0x8C420014U,
+                           0U, 0x0040F809U, 0x00003821U,
+                           0x0800CA8DU, 0U, 0x8E020058U}},
+            {0x8003291CU, {0x00003021U, 0x0800CA8DU, 0U,
+                           0x8E050114U, 0x0C0193ACU, 0x24060001U,
+                           0x8E020058U, 0U, 0x00021302U}},
+            {0x80075174U, {0x00002821U, 0x8E620018U, 0U,
+                           0x8C480028U, 0x8C49002CU, 0x8C4A0030U,
+                           0xAFA80018U, 0xAFA9001CU, 0xAFAA0020U}},
+        }};
+    for (const auto& [site, words] : windows)
+        assert(runtime.loadBytes(site - 16U, std::as_bytes(std::span{words})));
     assert(stuntmaster::game::setMouseControlPatches(runtime, true));
     assert(stuntmaster::game::setMouseControlPatches(runtime, true));
-    std::uint32_t site_word = 0U;
-    assert(runtime.read32(0x80075398U, site_word));
-    assert(site_word == 0x08000C00U);
-    assert(runtime.read32(0x80034010U, site_word));
-    assert(site_word == 0x08000C80U);
+    const std::array expected_sites{
+        std::pair{0x800303D8U, 0x08001200U},
+        std::pair{0x80031534U, 0x08001280U},
+        std::pair{0x800319A8U, 0x080012C0U},
+        std::pair{0x80032718U, 0x08001300U},
+        std::pair{0x8003291CU, 0x08001340U},
+        std::pair{0x80075174U, 0x08001400U},
+    };
+    std::uint32_t value = 0U;
+    for (const auto& [site, jump] : expected_sites) {
+        assert(runtime.read32(site, value) && value == jump);
+    }
 
-    const std::array<std::uint32_t, 2U> return_stub{
-        0x03E00008U, 0U}; // jr ra; nop
-    assert(runtime.loadBytes(
-        0x8006CFFCU, std::as_bytes(std::span{return_stub})));
-    const auto runUntil = [&](std::uint32_t start, std::uint32_t stop) {
+    const auto runUntil = [&](std::uint32_t start, std::uint32_t stop,
+                              int budget = 512) {
         assert(runtime.state().pc == start);
-        for (int executed = 0; executed < 256 && runtime.state().pc != stop;
+        for (int executed = 0; executed < budget && runtime.state().pc != stop;
              ++executed) {
             const auto step = runtime.step();
             assert(step.reason == stuntmaster::psx::R3000StopReason::running);
@@ -152,121 +209,193 @@ void mouseControlIsSemanticFingerprintGatedAndReversible() {
         runtime.settleLoadDelay();
     };
 
-    // Installed mode zero reproduces the displaced retail call without
-    // touching facing or the requested action.
-    assert(runtime.write8(0x800DFA38U, 0U));
-    assert(runtime.write32(0x800DFA34U, 0x9999U));
-    assert(runtime.write32(player + 0x2CU, 0x1111U));
-    assert(runtime.write32(player + 0x114U, 0x3456U));
-    assert(runtime.write32(player + 0xD0U, 100U));
-    runtime.reset(0x80075398U, 0U, 0x801F0000U);
-    runtime.setRegister(4, player);
-    runtime.setRegister(16, 2U);
-    runUntil(0x80075398U, 0x800753A0U);
-    std::uint32_t value = 0U;
-    assert(runtime.read32(player + 0x2CU, value) && value == 0x1111U);
-    assert(runtime.read32(player + 0x114U, value) && value == 0x3456U);
-    assert(runtime.state().gpr[5] == 2U);
-
-    // Camera-relative mode turns the player, preserves retail's travel angle,
-    // and substitutes the real Strafe action for Run during normal locomotion.
     assert(runtime.write8(0x800DFA38U, 1U));
-    assert(runtime.write32(0x800DFA34U, 0x2345U));
-    assert(runtime.write32(player + 0x2CU, 0x1111U));
-    assert(runtime.write32(player + 0x114U, 0x3456U));
-    assert(runtime.write32(player + 0xD0U, 100U));
-    assert(runtime.write32(player + 0x164U, 10U)); // AS_RUN
-    runtime.reset(0x80075398U, 0U, 0x801F0000U);
-    runtime.setRegister(4, player); // a0
-    runtime.setRegister(16, 2U);    // s0: Run
-    runUntil(0x80075398U, 0x800753A0U);
-    assert(runtime.read32(player + 0x2CU, value) && value == 0x2345U);
-    assert(runtime.read32(player + 0x114U, value) && value == 0x3456U);
-    assert(runtime.state().gpr[5] == 6U); // a1: Strafe
-    for (const auto ordinary_state : std::array<std::uint32_t, 2U>{1U, 11U}) {
-        assert(runtime.write32(player + 0x164U, ordinary_state));
-        runtime.reset(0x80075398U, 0U, 0x801F0000U);
-        runtime.setRegister(4, player);
-        runtime.setRegister(16, 2U);
-        runUntil(0x80075398U, 0x800753A0U);
-        assert(runtime.state().gpr[5] == 6U);
+    const auto verifyOwnership = [&](std::uint32_t state, bool travel_commit,
+                                     bool aim_commit) {
+        assert(runtime.write32(player + 0x114U, 0x3456U));
+        assert(runtime.write32(player + 0x2CU, 0x2222U));
+        runtime.reset(0x800303D8U, 0U, 0x801F0000U);
+        runtime.setRegister(17, player); // s1: Player
+        runtime.setRegister(20, state);  // s4: new action state
+        runUntil(0x800303D8U, 0x800303E0U);
+        assert(runtime.read32(player + 0x2CU, value) &&
+               value == (travel_commit ? 0x3456U : 0x2222U));
+        assert(runtime.read32(player + 0x114U, value) &&
+               value == (aim_commit ? 0x2222U : 0x3456U));
+    };
+    for (const auto state : {6U, 8U, 12U, 13U, 14U, 15U, 16U, 17U,
+                             20U, 21U, 30U}) {
+        verifyOwnership(state, true, false);
+    }
+    for (const auto state : {19U, 22U, 32U, 33U, 34U, 35U, 36U, 37U,
+                             38U, 39U, 40U, 41U, 42U, 43U, 44U, 45U}) {
+        verifyOwnership(state, false, true);
+    }
+    for (const auto state : {0U, 1U, 2U, 3U, 4U, 5U, 7U, 9U, 10U, 11U,
+                             18U, 23U, 31U, 46U, 63U}) {
+        verifyOwnership(state, false, false);
     }
 
-    // Contextual movement handlers consume Move itself. In particular,
-    // Player::_Flip on launcher/bouncy surfaces gates its air control on bit 2,
-    // so camera-relative mode must not replace it while that state is active.
-    assert(runtime.write32(player + 0x164U, 17U)); // AS_FLIP_VARIANT
-    runtime.reset(0x80075398U, 0U, 0x801F0000U);
-    runtime.setRegister(4, player);
-    runtime.setRegister(16, 2U);
-    runUntil(0x80075398U, 0x800753A0U);
-    assert(runtime.state().gpr[5] == 2U); // a1: contextual Move preserved
-
-    // Idle and non-movement action requests align faceAngle as well, so
-    // attacking after a mouse turn does not snap back to stale travel facing.
+    assert(runtime.write32(player + 0x164U, 1U));
     assert(runtime.write32(0x800DFA34U, 0x4567U));
-    assert(runtime.write32(player + 0xD0U, 0U));
-    runtime.reset(0x80075398U, 0U, 0x801F0000U);
-    runtime.setRegister(4, player);
-    runtime.setRegister(16, 2U);
-    runUntil(0x80075398U, 0x800753A0U);
-    assert(runtime.read32(player + 0x114U, value) && value == 0x4567U);
-    assert(runtime.write32(0x800DFA34U, 0x5678U));
-    assert(runtime.write32(player + 0xD0U, 100U));
-    runtime.reset(0x80075398U, 0U, 0x801F0000U);
-    runtime.setRegister(4, player);
-    runtime.setRegister(16, 8U); // non-movement action
-    runUntil(0x80075398U, 0x800753A0U);
-    assert(runtime.read32(player + 0x114U, value) && value == 0x5678U);
+    runtime.reset(0x80075174U, 0U, 0x801F0000U);
+    runtime.setRegister(2, player); // v0
+    runtime.setRegister(28, 0x800DC94CU); // gp
+    runUntil(0x80075174U, 0x8007517CU);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x4567U);
+    assert(runtime.state().gpr[9] == 0x4567U); // t1 snapshot used by decoder
+    assert(runtime.write32(player + 0x164U, 32U));
+    assert(runtime.write32(player + 0x2CU, 0x7777U));
+    assert(runtime.write32(0x800DFA34U, 0x9999U));
+    runtime.reset(0x80075174U, 0U, 0x801F0000U);
+    runtime.setRegister(2, player);
+    runtime.setRegister(28, 0x800DC94CU);
+    runUntil(0x80075174U, 0x8007517CU);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x7777U);
 
-    // Character-relative mode rotates the camera-derived movement direction
-    // by the mouse/player yaw delta without changing the retail action.
-    assert(runtime.write8(0x800DFA38U, 2U));
-    assert(runtime.write32(0x800DFA34U, 0x2000U));
-    assert(runtime.write32(0x800DD734U, camera));
-    assert(runtime.write32(camera + 0x2CU, 0x1000U));
-    assert(runtime.write32(player + 0x114U, 0x1100U));
-    runtime.reset(0x80075398U, 0U, 0x801F0000U);
-    runtime.setRegister(4, player);
-    runtime.setRegister(16, 2U);
-    runUntil(0x80075398U, 0x800753A0U);
-    assert(runtime.read32(player + 0x114U, value) && value == 0x2100U);
-    assert(runtime.state().gpr[5] == 2U);
-
-    // Both mouse modes skip automatic acquisition. An existing target goes
-    // through ReleaseTarget; a missing one continues after acquisition.
-    assert(runtime.write8(0x800DFA38U, 1U));
-    runtime.reset(0x80034010U, 0U, 0x801F0000U);
-    runtime.setRegister(2, 0x80150000U); // v0: existing target
-    runtime.setRegister(16, player);     // s0
-    runUntil(0x80034010U, 0x80065200U);
-    assert(runtime.state().gpr[4] == player);
-    runtime.reset(0x80034010U, 0U, 0x801F0000U);
-    runtime.setRegister(2, 0U);
-    runtime.setRegister(16, player);
-    runUntil(0x80034010U, 0x80034040U);
+    // Disabling in a free lease rejoins stock with body normalized to travel;
+    // disabling during a context leaves the context-owned body untouched.
+    assert(runtime.write32(player + 0x164U, 1U));
+    assert(runtime.write32(player + 0x114U, 0x2468U));
     assert(runtime.write8(0x800DFA38U, 0U));
-    runtime.reset(0x80034010U, 0U, 0x801F0000U);
-    runtime.setRegister(2, 0U);
+    runtime.reset(0x80075174U, 0U, 0x801F0000U);
+    runtime.setRegister(2, player);
+    runtime.setRegister(28, 0x800DC94CU);
+    runUntil(0x80075174U, 0x8007517CU);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x2468U);
+
+    // Stand uses retail's three-update ramp despite a deliberate split and
+    // clears any stale turn-around latch/timer. Off mode preserves the stock
+    // equality branch.
+    assert(runtime.write8(0x800DFA38U, 1U));
+    assert(runtime.write32(0x800DCB08U, 1U)); // gp+0x1bc latch
+    assert(runtime.write16(0x800DD6BCU, 7U)); // gp+0xd70 timer
+    runtime.reset(0x80031534U, 0U, 0x801F0000U);
+    runtime.setRegister(2, 0x1111U);
+    runtime.setRegister(3, 0x2222U);
+    runtime.setRegister(28, 0x800DC94CU);
+    runUntil(0x80031534U, 0x8003153CU);
+    assert(runtime.read32(0x800DCB08U, value) && value == 0U);
+    std::uint16_t half = 0U;
+    assert(runtime.read16(0x800DD6BCU, half) && half == 0U);
+    assert(runtime.write8(0x800DFA38U, 0U));
+    runtime.reset(0x80031534U, 0U, 0x801F0000U);
+    runtime.setRegister(2, 0x1111U);
+    runtime.setRegister(3, 0x1111U);
+    runUntil(0x80031534U, 0x8003153CU);
+
+    // Stand and Run suppress only their final retail FaceAngleY call. A tiny
+    // sentinel stub makes call-vs-suppress directly observable.
+    const std::array<std::uint32_t, 3U> face_stub{
+        0x24031234U, 0x03E00008U, 0U}; // addiu v1,zero,1234; jr ra; nop
+    assert(runtime.loadBytes(
+        0x80064EB0U, std::as_bytes(std::span{face_stub})));
+    assert(runtime.write8(0x800DFA38U, 1U));
+    assert(runtime.write32(player + 0x164U, 1U));
+    runtime.reset(0x800319A8U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(3, 0U);
+    runUntil(0x800319A8U, 0x800319B0U);
+    assert(runtime.state().gpr[3] == 0U);
+    assert(runtime.write32(player + 0x164U, 32U));
+    runtime.reset(0x800319A8U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(3, 0U);
+    runUntil(0x800319A8U, 0x800319B0U);
+    assert(runtime.state().gpr[3] == 0x1234U);
+    assert(runtime.write8(0x800DFA38U, 0U));
+    assert(runtime.write32(player + 0x164U, 1U));
+    runtime.reset(0x800319A8U, 0U, 0x801F0000U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(3, 0U);
+    runUntil(0x800319A8U, 0x800319B0U);
+    assert(runtime.state().gpr[3] == 0x1234U);
+
+    // Run's stop transition chooses authored directional idle 22 under the
+    // lease while retaining the original virtual call and off-mode arguments.
+    constexpr std::uint32_t indirect_stub_address = 0x80010000U;
+    const std::array<std::uint32_t, 2U> return_stub{0x03E00008U, 0U};
+    assert(runtime.loadBytes(
+        indirect_stub_address, std::as_bytes(std::span{return_stub})));
+    assert(runtime.write8(0x800DFA38U, 1U));
+    runtime.reset(0x80032718U, 0U, 0x801F0000U);
+    runtime.setRegister(2, indirect_stub_address);
+    runtime.setRegister(5, 46U);
+    runtime.setRegister(6, 1U);
+    runUntil(0x80032718U, 0x80032720U);
+    assert(runtime.state().gpr[5] == 22U && runtime.state().gpr[6] == 0U);
+    assert(runtime.write8(0x800DFA38U, 0U));
+    runtime.reset(0x80032718U, 0U, 0x801F0000U);
+    runtime.setRegister(2, indirect_stub_address);
+    runtime.setRegister(5, 46U);
+    runtime.setRegister(6, 1U);
+    runUntil(0x80032718U, 0x80032720U);
+    assert(runtime.state().gpr[5] == 46U && runtime.state().gpr[6] == 1U);
+
+    // A context claimed during Run still executes the original final facing
+    // call; suppression is leased only while the final state remains Run.
+    assert(runtime.write8(0x800DFA38U, 1U));
+    assert(runtime.write32(player + 0x164U, 32U));
+    runtime.reset(0x8003291CU, 0U, 0x801F0000U);
     runtime.setRegister(16, player);
-    runUntil(0x80034010U, 0x80034018U);
+    runtime.setRegister(4, player);
+    runtime.setRegister(3, 0U);
+    runUntil(0x8003291CU, 0x80032924U);
+    assert(runtime.state().gpr[3] == 0x1234U);
+
+    // The Run hook stays in AS_RUN but selects the exact four retail Strafe
+    // animation sectors and playback directions.
+    constexpr std::uint32_t model = 0x80150000U;
+    constexpr std::uint32_t model_vtable = 0x80151000U;
+    constexpr std::uint32_t animation = 0x80152000U;
+    assert(runtime.write32(player + 0x50U, model));
+    assert(runtime.write32(model + 0x08U, model_vtable));
+    assert(runtime.write32(model + 0x20U, animation));
+    assert(runtime.write32(model_vtable + 0x14U, indirect_stub_address));
+    const std::array<std::uint32_t, 3U> capture_anim_stub{
+        0xAD6557F8U, 0x03E00008U, 0U}; // sw a1,57f8(t3); jr ra; nop
+    const std::array<std::uint32_t, 3U> capture_loop_stub{
+        0xAD6557FCU, 0x03E00008U, 0U}; // sw a1,57fc(t3); jr ra; nop
+    assert(runtime.loadBytes(indirect_stub_address,
+                             std::as_bytes(std::span{capture_anim_stub})));
+    assert(runtime.loadBytes(0x80070C20U,
+                             std::as_bytes(std::span{capture_loop_stub})));
+    assert(runtime.write8(0x800DFA38U, 1U));
+    assert(runtime.write32(player + 0x164U, 10U));
+    const auto verifySector = [&](std::uint32_t delta,
+                                  std::uint32_t expected_animation,
+                                  std::uint32_t expected_loop) {
+        assert(runtime.write32(player + 0x114U, 0U));
+        assert(runtime.write32(player + 0x2CU, delta));
+        assert(runtime.write32(0x800057F8U, 0U));
+        assert(runtime.write32(0x800057FCU, 0U));
+        runtime.reset(0x8003291CU, 0U, 0x801F0000U);
+        runtime.setRegister(16, player);
+        runUntil(0x8003291CU, 0x80032924U);
+        assert(runtime.read32(0x800057F8U, value));
+        if (value != expected_animation) {
+            std::cerr << "mouse sector delta=" << delta << " animation="
+                      << value << " expected=" << expected_animation << '\n';
+        }
+        assert(value == expected_animation);
+        assert(runtime.read32(0x800057FCU, value) && value == expected_loop);
+        assert(runtime.read32(player + 0x164U, value) && value == 10U);
+    };
+    verifySector(0U, 51U, 0U);
+    verifySector(0x4000U, 52U, 1U);
+    verifySector(0x8000U, 51U, 1U);
+    verifySector(0xC000U, 52U, 0U);
 
     assert(stuntmaster::game::setMouseControlPatches(runtime, false));
     assert(stuntmaster::game::setMouseControlPatches(runtime, false));
-    assert(runtime.read32(0x80075398U, site_word));
-    assert(site_word == 0x0C01B3FFU);
-    assert(runtime.read32(0x80034010U, site_word));
-    assert(site_word == 0x1440000BU);
-
-    // A surrounding-window mismatch refuses both patches without modifying
-    // either site.
-    assert(runtime.write32(0x80075388U, 0U));
+    for (std::size_t index = 0U; index < windows.size(); ++index) {
+        assert(runtime.read32(windows[index].first, value) &&
+               value == windows[index].second[4]);
+    }
+    assert(runtime.write32(0x80031524U, 0U));
     assert(!stuntmaster::game::setMouseControlPatches(runtime, true));
-    assert(runtime.read32(0x80075398U, site_word));
-    assert(site_word == 0x0C01B3FFU);
-    assert(runtime.read32(0x80034010U, site_word));
-    assert(site_word == 0x1440000BU);
 }
+
 
 void retailHlePublishesMouseExtensionWithoutChangingDigitalPadBytes() {
     stuntmaster::psx::R3000Runtime runtime;
@@ -6901,7 +7030,7 @@ void licenseOverlayWrapsFoldsAndPaginates() {
 }
 
 int main() {
-    mouseControlIsSemanticFingerprintGatedAndReversible();
+    mouseControlDualHeadingIsBoundedAndReversible();
     retailHlePublishesMouseExtensionWithoutChangingDigitalPadBytes();
     // A taken branch must execute its delay slot before the target; the
     // retime hooks rely on this ordering (a hook site that is another

@@ -70,31 +70,39 @@ face-button presses in the title, menus, pause screen, movies, loads,
 cutscenes, or photo mode. Keyboard and gamepad bindings remain active and may
 be combined with mouse actions normally.
 
-Two-axis mouse movement supplies a camera-relative facing direction. Moving up,
-right, down, and left faces camera-forward, right, back, and left; a circular
-gesture therefore describes a complete turn. Stopping the mouse retains the
-last direction. The initial movement behavior is configurable:
+Two-axis mouse movement requests a camera-relative facing direction. Moving
+up, right, down, and left requests camera-forward, right, back, and left. A
+bounded angular-velocity controller turns toward that request using the
+shortest wrapped arc; maximum speed and acceleration prevent tight gestures or
+the `atan2` wrap point from producing an instantaneous flip. Stopping the mouse
+finishes the bounded turn toward the last requested direction. Consecutive
+gesture angles are unwrapped through zero so a circle keeps its direction, and
+queued lead is capped at one quarter-turn so a tight circle cannot bank an
+arbitrarily long spin.
 
 ```ini
 mouse.movement_mode=camera_relative
+mouse.turn_rate=540
+mouse.turn_acceleration=2160
 ```
 
-`F10` cycles these modes at runtime:
+The tuning values are degrees per second and degrees per second squared.
+`F10` toggles these modes at runtime:
 
 - `camera_relative`: W/A/S/D retain the fixed camera's movement directions
-  while mouse yaw independently controls facing. Ordinary Run uses retail's
-  authored directional strafe path and its forward/side/back animation table.
-- `character_relative`: movement directions rotate with mouse yaw and retain
-  the ordinary Run path. This is the fallback/A-B mode when camera-relative
-  strafing does not feel appropriate for a situation.
+  while mouse yaw independently controls facing. Ordinary movement stays in
+  full-speed Run and reuses retail's forward/side/back animation table without
+  entering the slower, targeting-aware Strafe state.
 - `off`: stock movement and facing, no mouse actions, and no cursor capture.
 
-Both mouse-facing modes suppress retail strafe's automatic foe acquisition and
-release an existing strafe target through retail's own target API. Explicit
-attacks, countering, and the game's other combat logic remain unchanged.
+Only ordinary Stand and Run grant mouse ownership of body yaw. Attacks,
+interactions, air movement, traversal, reactions, and scripts take explicit
+ownership at action transitions; relative orientation gestures are discarded
+while a context owns facing and re-entry reseeds from the live body without a
+snap. Explicit retail Strafe retains its normal targeting behavior.
 The legacy `mouse.sensitivity` setting from the first experimental build is
-still accepted so an existing `input.ini` starts normally, but directional
-orientation discards motion magnitude and does not use it. Cursor capture
+still accepted so an existing `input.ini` starts normally, but the bounded
+controller uses `turn_rate` and `turn_acceleration` instead. Cursor capture
 begins only after the guest confirms steady
 `PlayerUserControl` with window focus, and is released on pause, loss of
 control/focus, movies, loads, photo mode, and `off` mode.

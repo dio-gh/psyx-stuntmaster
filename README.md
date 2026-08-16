@@ -73,10 +73,10 @@ The default keyboard bindings are:
 | Select | Escape |
 
 During gameplay, left click punches, right click kicks, and two-axis mouse
-movement supplies Jackie's camera-relative facing direction. Movement remains
-camera-relative by default while using
-the retail directional-strafe animations; `F10` cycles a character-relative
-fallback and stock/off mode. Mouse actions are semantic and remappable, so
+movement requests Jackie's camera-relative facing direction through a bounded
+turn controller. Movement remains full-speed camera-relative Run while reusing
+retail directional animations without entering Strafe; `F10` toggles mouse
+control and stock/off mode. Mouse actions are semantic and remappable, so
 retail controller layouts and combat combinations remain authoritative, and
 mouse clicks never leak into menus or movies.
 
@@ -97,7 +97,7 @@ Host controls:
 | `F7` | Toggle 30Hz/60Hz mode |
 | `F8` | Toggle 4:3/widescreen mode |
 | `F9` | Quick Load |
-| `F10` | Cycle camera-relative / character-relative / off mouse control |
+| `F10` | Toggle camera-relative / stock mouse control |
 
 Photo mode starts with the world simulation frozen. Press `P`, or R3 on a
 controller, to resume/freeze it without leaving the free camera. Move with `W`,

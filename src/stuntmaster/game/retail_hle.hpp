@@ -126,7 +126,7 @@ public:
         pad_one_buttons_ = active_low_buttons;
     }
     // Host/guest mouse bridge in bytes unused by retail's digital-pad driver.
-    // `mode` uses MouseMovementMode's stable wire values (0..2).
+    // `mode` uses MouseMovementMode's stable wire values (0..1).
     void setMouseControlState(
         std::uint32_t desired_yaw, std::uint8_t mode) noexcept {
         mouse_desired_yaw_ = desired_yaw;
