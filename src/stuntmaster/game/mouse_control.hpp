@@ -59,8 +59,8 @@ struct MouseControlConfig {
     MouseMovementMode initial_mode{MouseMovementMode::camera_relative};
     // Degrees per second. The controller converts these to retail's 16-bit
     // turn and applies them at the current emulated VBlank rate.
-    std::uint32_t maximum_turn_rate{540U};
-    std::uint32_t turn_acceleration{2160U};
+    std::uint32_t maximum_turn_rate{720U};
+    std::uint32_t turn_acceleration{10'000U};
 };
 
 struct MouseGameplayContext {
@@ -136,8 +136,8 @@ private:
     double target_yaw_{};
     double last_gesture_yaw_{};
     double angular_velocity_{};
-    std::uint32_t maximum_turn_rate_{540U};
-    std::uint32_t turn_acceleration_{2160U};
+    std::uint32_t maximum_turn_rate_{720U};
+    std::uint32_t turn_acceleration_{10'000U};
     bool synchronized_{};
     bool lease_active_{};
     bool have_target_{};

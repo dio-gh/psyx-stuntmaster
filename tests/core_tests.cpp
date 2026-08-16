@@ -57,6 +57,8 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     assert(!stuntmaster::game::parseMouseMovementMode("character_relative"));
 
     stuntmaster::game::MouseControlConfig config;
+    assert(config.maximum_turn_rate == 720U);
+    assert(config.turn_acceleration == 10'000U);
     config.maximum_turn_rate = 360U;
     config.turn_acceleration = 3600U;
     stuntmaster::game::MouseYawController yaw{config};
@@ -72,6 +74,16 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     assert(first_step <= 1'100U); // bounded to roughly six degrees
     for (int frame = 0; frame < 120; ++frame) yaw.update(context, 0, 0, 60U);
     assert(std::abs(static_cast<int>(yaw.desiredYaw()) - 0x4000) <= 1);
+
+    // The queue bound must not make a valid absolute target unreachable.
+    // Camera-back is the furthest possible shortest-arc request.
+    stuntmaster::game::MouseYawController backward_yaw{config};
+    context.player_yaw = 0U;
+    backward_yaw.update(context, 0, 0, 60U);
+    backward_yaw.update(context, 0, 10, 60U);
+    for (int frame = 0; frame < 120; ++frame)
+        backward_yaw.update(context, 0, 0, 60U);
+    assert(backward_yaw.desiredYaw() == 0x8000U);
 
     // 0xffff and 0x0000 are adjacent headings. The controller must take that
     // short arc instead of reversing almost a complete turn at atan2's wrap.
@@ -89,7 +101,8 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
 
     // A gesture rotating much faster than Jackie can turn must keep its
     // direction after lapping him; it may not take the newly-shorter reverse
-    // arc. The quarter-turn lead cap also keeps the queued rotation finite.
+    // arc. The half-turn lead cap also keeps the queued rotation finite while
+    // preserving every possible absolute target direction.
     config.maximum_turn_rate = 90U;
     config.turn_acceleration = 10'000U;
     stuntmaster::game::MouseYawController lapped_yaw{config};
@@ -108,6 +121,10 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
         previous_lapped_yaw = lapped_yaw.desiredYaw();
     }
 
+    context.action_state = 6U;
+    const auto airborne_entry_yaw = yaw.desiredYaw();
+    yaw.update(context, -100, 0, 60U);
+    assert(yaw.desiredYaw() != airborne_entry_yaw); // jump retains lease
     context.action_state = 32U;
     const auto context_entry_yaw = yaw.desiredYaw();
     yaw.update(context, -100, 0, 60U);
@@ -128,6 +145,9 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     auto diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
     assert(diagnostic.kind == MouseHeadingSplitKind::free_lease &&
            diagnostic.signed_delta == -0x1000);
+    context.action_state = 13U;
+    assert(stuntmaster::game::mouseHeadingDiagnostic(context).kind ==
+           MouseHeadingSplitKind::free_lease);
     context.action_state = 32U;
     diagnostic = stuntmaster::game::mouseHeadingDiagnostic(context);
     assert(diagnostic.kind == MouseHeadingSplitKind::context);
@@ -159,17 +179,35 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
            live->travel_yaw == 0x5678U && live->action_state == 10U &&
            live->camera_yaw == 0x8765U);
 
-    const std::array<std::pair<std::uint32_t, std::array<std::uint32_t, 9U>>, 6U>
+    const std::array<std::pair<std::uint32_t, std::array<std::uint32_t, 9U>>, 12U>
         windows{{
             {0x800303D8U, {0xAFB40038U, 0x00A0A021U, 0xAFB30034U,
                            0x00C09821U, 0xAFBF0040U, 0xAFB5003CU,
                            0xAFB20030U, 0xAFB00028U, 0x8E220058U}},
+            {0x800309B0U, {0x00C03821U, 0x8E2202C8U, 0x02202021U,
+                           0x8C450000U, 0x0C0186D1U, 0x26260028U,
+                           0x8E2302B8U, 0x240205DCU, 0xA6220156U}},
             {0x80031534U, {0x00822023U, 0x8E03002CU, 0x8E020114U,
                            0U, 0x14430024U, 0U, 0x8E020268U, 0U,
                            0x00401821U}},
             {0x800319A8U, {0x00003021U, 0x0800C67DU, 0U,
                            0x8F850D6CU, 0x0C0193ACU, 0x24060001U,
                            0x8E040050U, 0U, 0x8C820020U}},
+            {0x80031B40U, {0xAFA20014U, 0x8E250114U, 0x96300156U,
+                           0x24021388U, 0x0C0193ACU, 0xA6220156U,
+                           0x02202021U, 0x8E2500D4U, 0x27A60010U}},
+            {0x80031BE4U, {0x02202021U, 0x02202021U, 0x8E250114U,
+                           0x24060001U, 0x0C0193ACU, 0U, 0x02202021U,
+                           0x02002821U, 0x27A60020U}},
+            {0x80032060U, {0U, 0x1040009BU, 0x02002021U,
+                           0x8E050114U, 0x0C0193ACU, 0x24060001U,
+                           0x860202C0U, 0U, 0x1040000FU}},
+            {0x800321ACU, {0xAFA80018U, 0xAFA9001CU, 0xAFAA0020U,
+                           0x8E050114U, 0x0C0193ACU, 0x24060001U,
+                           0xAFA00020U, 0xAFA00018U, 0x8E020114U}},
+            {0x800323D8U, {0xAFA70010U, 0xAFA80014U, 0xAFA90018U,
+                           0x8E250114U, 0x0C0193ACU, 0x24060001U,
+                           0x3C10800DU, 0x02202021U, 0x8E056550U}},
             {0x80032718U, {0x24060001U, 0xAFA00010U, 0x8C420014U,
                            0U, 0x0040F809U, 0x00003821U,
                            0x0800CA8DU, 0U, 0x8E020058U}},
@@ -186,8 +224,14 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     assert(stuntmaster::game::setMouseControlPatches(runtime, true));
     const std::array expected_sites{
         std::pair{0x800303D8U, 0x08001200U},
+        std::pair{0x800309B0U, 0x08001240U},
         std::pair{0x80031534U, 0x08001280U},
         std::pair{0x800319A8U, 0x080012C0U},
+        std::pair{0x80031B40U, 0x08001390U},
+        std::pair{0x80031BE4U, 0x080013A8U},
+        std::pair{0x80032060U, 0x080013C0U},
+        std::pair{0x800321ACU, 0x080013D8U},
+        std::pair{0x800323D8U, 0x08001440U},
         std::pair{0x80032718U, 0x08001300U},
         std::pair{0x8003291CU, 0x08001340U},
         std::pair{0x80075174U, 0x08001400U},
@@ -223,19 +267,44 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
         assert(runtime.read32(player + 0x114U, value) &&
                value == (aim_commit ? 0x2222U : 0x3456U));
     };
-    for (const auto state : {6U, 8U, 12U, 13U, 14U, 15U, 16U, 17U,
-                             20U, 21U, 30U}) {
+    for (const auto state : {12U, 20U, 21U, 30U}) {
         verifyOwnership(state, true, false);
     }
     for (const auto state : {19U, 22U, 32U, 33U, 34U, 35U, 36U, 37U,
                              38U, 39U, 40U, 41U, 42U, 43U, 44U, 45U}) {
         verifyOwnership(state, false, true);
     }
-    for (const auto state : {0U, 1U, 2U, 3U, 4U, 5U, 7U, 9U, 10U, 11U,
-                             18U, 23U, 31U, 46U, 63U}) {
+    for (const auto state : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U,
+                             11U, 13U, 14U, 15U, 16U, 17U, 18U, 23U, 31U,
+                             46U, 63U}) {
         verifyOwnership(state, false, false);
     }
 
+    // Running-jump launch force uses travel yaw without changing official
+    // body yaw. Off mode retains retail's original orientation vector.
+    const std::array<std::uint32_t, 4U> capture_force_stub{
+        0x8CC30004U, 0U, 0x03E00008U, 0U}; // lw v1,4(a2); nop; jr ra; nop
+    assert(runtime.loadBytes(
+        0x80061B44U, std::as_bytes(std::span{capture_force_stub})));
+    assert(runtime.write32(player + 0x2CU, 0x2222U));
+    assert(runtime.write32(player + 0x114U, 0x3456U));
+    assert(runtime.write8(0x800DFA38U, 1U));
+    runtime.reset(0x800309B0U, 0U, 0x801F0000U);
+    runtime.setRegister(17, player); // s1
+    runtime.setRegister(20, 6U);     // s4: running jump
+    runtime.setRegister(3, 0U);
+    runUntil(0x800309B0U, 0x800309B8U);
+    assert(runtime.state().gpr[3] == 0x3456U);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x2222U);
+    assert(runtime.write8(0x800DFA38U, 0U));
+    runtime.reset(0x800309B0U, 0U, 0x801F0000U);
+    runtime.setRegister(17, player);
+    runtime.setRegister(20, 6U);
+    runtime.setRegister(3, 0U);
+    runUntil(0x800309B0U, 0x800309B8U);
+    assert(runtime.state().gpr[3] == 0x2222U);
+
+    assert(runtime.write8(0x800DFA38U, 1U));
     assert(runtime.write32(player + 0x164U, 1U));
     assert(runtime.write32(0x800DFA34U, 0x4567U));
     runtime.reset(0x80075174U, 0U, 0x801F0000U);
@@ -244,6 +313,14 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     runUntil(0x80075174U, 0x8007517CU);
     assert(runtime.read32(player + 0x2CU, value) && value == 0x4567U);
     assert(runtime.state().gpr[9] == 0x4567U); // t1 snapshot used by decoder
+    assert(runtime.write32(player + 0x164U, 6U));
+    assert(runtime.write32(0x800DFA34U, 0x5A5AU));
+    runtime.reset(0x80075174U, 0U, 0x801F0000U);
+    runtime.setRegister(2, player);
+    runtime.setRegister(28, 0x800DC94CU);
+    runUntil(0x80075174U, 0x8007517CU);
+    assert(runtime.read32(player + 0x2CU, value) && value == 0x5A5AU);
+    assert(runtime.state().gpr[9] == 0x5A5AU);
     assert(runtime.write32(player + 0x164U, 32U));
     assert(runtime.write32(player + 0x2CU, 0x7777U));
     assert(runtime.write32(0x800DFA34U, 0x9999U));
@@ -310,6 +387,41 @@ void mouseControlDualHeadingIsBoundedAndReversible() {
     runtime.setRegister(3, 0U);
     runUntil(0x800319A8U, 0x800319B0U);
     assert(runtime.state().gpr[3] == 0x1234U);
+
+    // Airborne lease seams suppress retail's forced FaceAngleY calls only in
+    // the matching jump/fall/flip state. A transition to combat still runs
+    // the exact retail call.
+    struct AirFaceCase {
+        std::uint32_t site;
+        std::uint32_t stop;
+        std::uint32_t player_register;
+        std::uint32_t leased_state;
+    };
+    const std::array air_face_cases{
+        AirFaceCase{0x80031B40U, 0x80031B48U, 17U, 16U},
+        AirFaceCase{0x80031BE4U, 0x80031BECU, 17U, 17U},
+        AirFaceCase{0x80032060U, 0x80032068U, 16U, 6U},
+        AirFaceCase{0x800321ACU, 0x800321B4U, 16U, 8U},
+        AirFaceCase{0x800323D8U, 0x800323E0U, 17U, 13U},
+    };
+    assert(runtime.write8(0x800DFA38U, 1U));
+    for (const auto& air : air_face_cases) {
+        assert(runtime.write32(player + 0x164U, air.leased_state));
+        runtime.reset(air.site, 0U, 0x801F0000U);
+        runtime.setRegister(air.player_register, player);
+        runtime.setRegister(4, player);
+        runtime.setRegister(3, 0U);
+        runUntil(air.site, air.stop);
+        assert(runtime.state().gpr[3] == 0U);
+
+        assert(runtime.write32(player + 0x164U, 32U));
+        runtime.reset(air.site, 0U, 0x801F0000U);
+        runtime.setRegister(air.player_register, player);
+        runtime.setRegister(4, player);
+        runtime.setRegister(3, 0U);
+        runUntil(air.site, air.stop);
+        assert(runtime.state().gpr[3] == 0x1234U);
+    }
 
     // Run's stop transition chooses authored directional idle 22 under the
     // lease while retaining the original virtual call and off-mode arguments.

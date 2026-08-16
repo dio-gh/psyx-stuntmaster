@@ -81,15 +81,17 @@ maximum rate, and acceleration limits. The bounded yaw and enabled/off mode
 occupy bytes 4-8 of retail's 34-byte direct-pad buffer, which the digital
 `0x41` driver ignores.
 
-Six reversible, surrounding-window-fingerprinted guest trampolines consume the
-extension. `faceAngle` remains camera-relative travel and `orientation.y`
-remains official body/combat heading. Only ordinary Stand and Run lease the
-body heading to the mouse; `Player::SetActionState` commits travel or aim for
-the action classes that require it, while all other contexts retain authored
-ownership. Move/action 2 and full-speed Run remain intact. Run selects the
-retail directional animations without entering Strafe. Quick saves normalize
-all six sites and their separate guest-extension arena, then fingerprint-
-reapply them on load. The guest remains the only writer of Player state.
+Twelve reversible, surrounding-window-fingerprinted guest trampolines consume
+the extension. `faceAngle` remains camera-relative travel and `orientation.y`
+remains official body/combat heading. Stand, Run, Jump, Fall, and launcher
+Flip states lease body heading to the mouse; `Player::SetActionState` commits
+travel or aim for the action classes that require it, while all other contexts
+retain authored ownership. Air physics continues to consume travel yaw, while
+the repeated retail air-facing calls are suppressed during the lease. Move/
+action 2 and full-speed Run remain intact. Run selects the retail directional
+animations without entering Strafe. Quick saves normalize all twelve sites and
+their separate guest-extension arena, then fingerprint-reapply them on load.
+The guest remains the only writer of Player state.
 
 Guest execution stays inside `R3000Runtime::runBatch` until a machine boundary:
 an HLE/BIOS or diagnostic PC, a claimed MMIO access, a stop/fault, or the exact

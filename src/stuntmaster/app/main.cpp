@@ -758,7 +758,7 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         "mouse control refused: a retail input fingerprint "
                         "did not match"};
                 }
-                std::cout << "retail_patch=mouse_dual_heading_x6\n";
+                std::cout << "retail_patch=mouse_dual_heading_x12\n";
             }
             if (options->experimental_host_menu) {
                 retail_hle.setHostMenuWidescreenCull(
@@ -1093,6 +1093,8 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
             std::optional<stuntmaster::game::MouseHeadingDiagnostic>
                 previous_heading_diagnostic;
             std::uint64_t next_heading_diagnostic_vblank{};
+            std::optional<std::uint64_t> context_split_started_vblank;
+            bool context_split_notified{};
             // Packed rumble request from the guest worker: motor1 |
             // motor2 << 8 | duration_ms << 16. Zero means no active shake.
             // The main thread applies it to the SDL game controller.
@@ -1175,7 +1177,6 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 photo_simulation_running,
                 mouse_camera_relative,
                 mouse_off,
-                mouse_heading_split_free,
                 mouse_heading_split_context,
             };
             std::atomic<QuickSaveNotification> quick_save_notification{
@@ -1711,6 +1712,8 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                 mouse_gameplay_context.reset();
                 previous_heading_diagnostic.reset();
                 next_heading_diagnostic_vblank = 0U;
+                context_split_started_vblank.reset();
+                context_split_notified = false;
                 latest_mouse_held_actions.store(
                     0U, std::memory_order_release);
                 (void)latched_mouse_pressed_actions.exchange(
@@ -1850,13 +1853,19 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                     const auto diagnostic =
                         stuntmaster::game::mouseHeadingDiagnostic(
                             *mouse_gameplay_context);
-                    const auto changed = !previous_heading_diagnostic ||
+                    const auto category_changed =
+                        !previous_heading_diagnostic ||
                         diagnostic.kind != previous_heading_diagnostic->kind ||
+                        diagnostic.split() !=
+                            previous_heading_diagnostic->split();
+                    const auto state_changed =
+                        !previous_heading_diagnostic ||
                         diagnostic.action_state !=
                             previous_heading_diagnostic->action_state;
                     if (diagnostic.split() &&
-                        (changed || scheduled_vblanks >=
-                                        next_heading_diagnostic_vblank)) {
+                        (category_changed || state_changed ||
+                         scheduled_vblanks >=
+                             next_heading_diagnostic_vblank)) {
                         const auto expected = diagnostic.kind ==
                             stuntmaster::game::
                                 MouseHeadingSplitKind::free_lease;
@@ -1872,15 +1881,6 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                             (high_frequency_active
                                  ? high_frequency_schedule.vblank_rate
                                  : retail_schedule.vblank_rate);
-                        if (changed) {
-                            quick_save_notification.store(
-                                expected
-                                    ? QuickSaveNotification::
-                                          mouse_heading_split_free
-                                    : QuickSaveNotification::
-                                          mouse_heading_split_context,
-                                std::memory_order_release);
-                        }
                     } else if (!diagnostic.split() &&
                                previous_heading_diagnostic &&
                                previous_heading_diagnostic->split()) {
@@ -1889,9 +1889,36 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                                   << std::hex << diagnostic.body_yaw
                                   << std::dec << '\n';
                     }
+                    if (diagnostic.kind == stuntmaster::game::
+                                               MouseHeadingSplitKind::context) {
+                        if (!context_split_started_vblank) {
+                            context_split_started_vblank = scheduled_vblanks;
+                            context_split_notified = false;
+                        }
+                        const auto half_second = std::max<std::uint32_t>(
+                            1U,
+                            (high_frequency_active
+                                 ? high_frequency_schedule.vblank_rate
+                                 : retail_schedule.vblank_rate) /
+                                2U);
+                        if (!context_split_notified &&
+                            scheduled_vblanks >=
+                                *context_split_started_vblank + half_second) {
+                            quick_save_notification.store(
+                                QuickSaveNotification::
+                                    mouse_heading_split_context,
+                                std::memory_order_release);
+                            context_split_notified = true;
+                        }
+                    } else {
+                        context_split_started_vblank.reset();
+                        context_split_notified = false;
+                    }
                     previous_heading_diagnostic = diagnostic;
                 } else {
                     previous_heading_diagnostic.reset();
+                    context_split_started_vblank.reset();
+                    context_split_notified = false;
                 }
                 mouse_yaw.update(
                     mouse_gameplay_context,
@@ -3420,10 +3447,6 @@ void runGuestSession(const Options& option_values, LoadedGame& loaded_game) {
                         break;
                     case QuickSaveNotification::mouse_off:
                         live_presenter->showNotification("MOUSE CONTROL OFF");
-                        break;
-                    case QuickSaveNotification::mouse_heading_split_free:
-                        live_presenter->showNotification(
-                            "HEADING SPLIT: FREE LEASE");
                         break;
                     case QuickSaveNotification::mouse_heading_split_context:
                         live_presenter->showNotification(

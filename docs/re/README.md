@@ -2260,28 +2260,31 @@ Run causes severe motion discomfort. The exhaustive consumer and ownership
 inventory is recorded in [MOUSE_HEADING_AUDIT.md](MOUSE_HEADING_AUDIT.md).
 The proven replacement architecture is in
 [MOUSE_DUAL_HEADING_DESIGN.md](MOUSE_DUAL_HEADING_DESIGN.md). It keeps
-camera-relative Run and Move, gives ordinary Stand/Run a scoped mouse-facing
-lease, normalizes context ownership at Player action transitions, and reuses
-directional Strafe animations without entering Strafe state. The two-hook
+camera-relative Run and Move, gives free locomotion and ordinary airborne
+states a scoped mouse-facing lease, normalizes context ownership at Player
+action transitions, and reuses directional Strafe animations without entering
+Strafe state. The two-hook
 implementation described above remains useful prototype evidence, not the
 shipping movement architecture.
 
 ### Dual-heading mouse locomotion — implemented and emulator-tested
 
-The final implementation replaces the prototype with six transactional,
+The final implementation replaces the prototype with twelve transactional,
 fingerprinted resident seams: action ownership at `0x800303D8`, Stand movement
 at `0x80031534`, Stand final facing at `0x800319A8`, Run stop animation at
 `0x80032718`, Run facing/animation at `0x8003291C`, and the input yaw snapshot
-at `0x80075174`. Bodies live in the separately proved guest-extension arena
+at `0x80075174`, plus running-jump force and five repeated Jump/Fall/Flip
+facing sites. Bodies live in the separately proved guest-extension arena
 `0x80004800`–`0x800057FF`; quick saves normalize and rehydrate the entire set.
 
 The host publishes a bounded, shortest-arc mouse yaw rather than snapping to
 each raw `atan2` result. Configurable angular speed and acceleration prevent
 tight circles and the 16-bit zero crossing from creating unbounded turns;
-continuous gesture-angle unwrapping preserves direction and a quarter-turn
-lead cap prevents queued spins.
-Expected Stand/Run body/travel splits and suspicious contextual splits are
-distinguished in transition/rate-limited diagnostics.
+continuous gesture-angle unwrapping preserves direction and a half-turn lead
+cap preserves every target direction without banking extra revolutions.
+Expected locomotion/air body-travel splits remain console-only; persistent
+suspicious contextual splits retain transition/rate-limited diagnostics and a
+delayed on-screen notification.
 
 Emulator tests execute all action-ownership classes, current-frame yaw,
 context discard/reseed, four directional Run sectors, stop animation, stock

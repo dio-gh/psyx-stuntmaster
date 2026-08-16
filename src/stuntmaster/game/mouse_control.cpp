@@ -27,7 +27,10 @@ constexpr std::uint32_t player_user_control_handler = 0x80074F5CU;
 constexpr std::uint32_t camera_address = 0x800DD734U;
 constexpr std::uint32_t camera_orientation_y_offset = 0x2CU;
 constexpr double angle_turn = 65'536.0;
-constexpr double maximum_target_lead = angle_turn / 4.0;
+// A target may be anywhere on the shortest arc, including directly behind
+// Jackie, but may never bank more than one turn decision ahead of the body.
+// Rate and acceleration limits govern how quickly that target is reached.
+constexpr double maximum_target_lead = angle_turn / 2.0;
 
 constexpr std::uint32_t mouse_mailbox_yaw = 0x800DFA34U;
 constexpr std::uint32_t mouse_mailbox_mode = 0x800DFA38U;
@@ -123,6 +126,28 @@ constexpr std::uint32_t run_face_site = 0x8003291CU;
 constexpr std::uint32_t run_face_arena = 0x80004D00U;
 constexpr std::uint32_t input_yaw_site = 0x80075174U;
 constexpr std::uint32_t input_yaw_arena = 0x80005000U;
+constexpr std::uint32_t run_jump_force_site = 0x800309B0U;
+constexpr std::uint32_t run_jump_force_arena = 0x80004900U;
+constexpr std::uint32_t flip_face_first_site = 0x80031B40U;
+constexpr std::uint32_t flip_face_first_arena = 0x80004E40U;
+constexpr std::uint32_t flip_face_second_site = 0x80031BE4U;
+constexpr std::uint32_t flip_face_second_arena = 0x80004EA0U;
+constexpr std::uint32_t jump_face_first_site = 0x80032060U;
+constexpr std::uint32_t jump_face_first_arena = 0x80004F00U;
+constexpr std::uint32_t jump_face_second_site = 0x800321ACU;
+constexpr std::uint32_t jump_face_second_arena = 0x80004F60U;
+constexpr std::uint32_t fall_face_site = 0x800323D8U;
+constexpr std::uint32_t fall_face_arena = 0x80005100U;
+
+// Stand, Run, player running/standing jumps, Fall/HardFall, and launcher
+// Flip variants retain an independent visible/combat heading. All are below
+// state 31, allowing the guest bodies to use one compact bit mask.
+constexpr std::uint32_t free_facing_state_mask = 0x00036542U;
+[[nodiscard]] constexpr bool freeFacingState(
+    std::uint32_t action_state) noexcept {
+    return action_state < 31U &&
+        (free_facing_state_mask & (1U << action_state)) != 0U;
+}
 
 constexpr std::array<std::uint32_t, 9U> ownership_window{
     0xAFB40038U, 0x00A0A021U, 0xAFB30034U, 0x00C09821U, 0xAFBF0040U,
@@ -142,6 +167,68 @@ constexpr std::array<std::uint32_t, 9U> run_face_window{
 constexpr std::array<std::uint32_t, 9U> input_yaw_window{
     0x00002821U, 0x8E620018U, 0x00000000U, 0x8C480028U, 0x8C49002CU,
     0x8C4A0030U, 0xAFA80018U, 0xAFA9001CU, 0xAFAA0020U};
+constexpr std::array<std::uint32_t, 9U> run_jump_force_window{
+    0x00C03821U, 0x8E2202C8U, 0x02202021U, 0x8C450000U, 0x0C0186D1U,
+    0x26260028U, 0x8E2302B8U, 0x240205DCU, 0xA6220156U};
+constexpr std::array<std::uint32_t, 9U> flip_face_first_window{
+    0xAFA20014U, 0x8E250114U, 0x96300156U, 0x24021388U, 0x0C0193ACU,
+    0xA6220156U, 0x02202021U, 0x8E2500D4U, 0x27A60010U};
+constexpr std::array<std::uint32_t, 9U> flip_face_second_window{
+    0x02202021U, 0x02202021U, 0x8E250114U, 0x24060001U, 0x0C0193ACU,
+    0x00000000U, 0x02202021U, 0x02002821U, 0x27A60020U};
+constexpr std::array<std::uint32_t, 9U> jump_face_first_window{
+    0x00000000U, 0x1040009BU, 0x02002021U, 0x8E050114U, 0x0C0193ACU,
+    0x24060001U, 0x860202C0U, 0x00000000U, 0x1040000FU};
+constexpr std::array<std::uint32_t, 9U> jump_face_second_window{
+    0xAFA80018U, 0xAFA9001CU, 0xAFAA0020U, 0x8E050114U, 0x0C0193ACU,
+    0x24060001U, 0xAFA00020U, 0xAFA00018U, 0x8E020114U};
+constexpr std::array<std::uint32_t, 9U> fall_face_window{
+    0xAFA70010U, 0xAFA80014U, 0xAFA90018U, 0x8E250114U, 0x0C0193ACU,
+    0x24060001U, 0x3C10800DU, 0x02202021U, 0x8E056550U};
+
+constexpr std::array<std::uint32_t, 26U> run_jump_force_body{
+    lui(t0, 0x800EU), lbu(t0, static_cast<std::int16_t>(mouse_mailbox_mode), t0), 0U,
+    addiu(t0, t0, -1),
+    encodeBranch(0x05U, t0, zero, run_jump_force_arena + 16U,
+                 run_jump_force_arena + 96U), 0U,
+    addiu(t0, s4, -6),
+    encodeBranch(0x05U, t0, zero, run_jump_force_arena + 28U,
+                 run_jump_force_arena + 96U), 0U,
+    addiu(sp, sp, -16), sw(ra, 12, sp), lw(t0, 0x28, s1),
+    lw(t1, 0x114, s1), lw(t2, 0x30, s1), sw(t0, 0, sp), sw(t1, 4, sp),
+    sw(t2, 8, sp), addu(a2, sp, zero), encodeJal(0x80061B44U), 0U,
+    lw(ra, 12, sp), addiu(sp, sp, 16),
+    encodeJump(run_jump_force_arena + 104U), 0U,
+    encodeJal(0x80061B44U), 0U,
+};
+
+constexpr std::array<std::uint32_t, 19U> makeFaceLeaseBody(
+    std::uint32_t arena, Register player, std::uint32_t state_mask) noexcept {
+    return {
+        lui(t0, 0x800EU),
+        lbu(t0, static_cast<std::int16_t>(mouse_mailbox_mode), t0), 0U,
+        addiu(t0, t0, -1),
+        encodeBranch(0x05U, t0, zero, arena + 16U, arena + 68U), 0U,
+        lw(t0, 0x164, player), 0U, sltiu(t1, t0, 31U),
+        encodeBranch(0x04U, t1, zero, arena + 36U, arena + 68U), 0U,
+        lui(t1, static_cast<std::uint16_t>(state_mask >> 16U)),
+        ori(t1, t1, static_cast<std::uint16_t>(state_mask)),
+        srlv(t1, t1, t0), andi(t1, t1, 1U),
+        encodeBranch(0x05U, t1, zero, arena + 60U, arena + 76U), 0U,
+        encodeJal(0x80064EB0U), 0U,
+    };
+}
+
+constexpr auto flip_face_first_body = makeFaceLeaseBody(
+    flip_face_first_arena, s1, (1U << 16U) | (1U << 17U));
+constexpr auto flip_face_second_body = makeFaceLeaseBody(
+    flip_face_second_arena, s1, (1U << 16U) | (1U << 17U));
+constexpr auto jump_face_first_body = makeFaceLeaseBody(
+    jump_face_first_arena, s0, (1U << 6U) | (1U << 8U));
+constexpr auto jump_face_second_body = makeFaceLeaseBody(
+    jump_face_second_arena, s0, (1U << 6U) | (1U << 8U));
+constexpr auto fall_face_body = makeFaceLeaseBody(
+    fall_face_arena, s1, (1U << 13U) | (1U << 14U));
 
 // The first prologue word is not hook-safe: its following store would execute
 // before the stack allocation in a jump delay slot. At 0x800303D8 the stack is
@@ -152,7 +239,7 @@ constexpr std::array<std::uint32_t, 36U> ownership_body{
     encodeBranch(0x05U, t1, zero, ownership_arena + 16U, ownership_arena + 140U), 0U,
     sltiu(t1, s4, 31U),
     encodeBranch(0x04U, t1, zero, ownership_arena + 28U, ownership_arena + 60U), 0U,
-    lui(t2, 0x4033U), ori(t2, t2, 0xF140U), srlv(t2, t2, s4), andi(t2, t2, 1U),
+    lui(t2, 0x4030U), ori(t2, t2, 0x1000U), srlv(t2, t2, s4), andi(t2, t2, 1U),
     encodeBranch(0x05U, t2, zero, ownership_arena + 52U, ownership_arena + 108U), 0U,
     addiu(t1, s4, -19),
     encodeBranch(0x04U, t1, zero, ownership_arena + 64U, ownership_arena + 128U), 0U,
@@ -222,30 +309,35 @@ constexpr std::array<std::uint32_t, 72U> run_face_body{
     encodeJump(run_face_arena + 288U), 0U, encodeJal(0x80064EB0U), 0U,
 };
 
-constexpr std::array<std::uint32_t, 53U> input_yaw_body{
+constexpr std::array<std::uint32_t, 59U> input_yaw_body{
     lui(t3, 0x800EU), lbu(t3, static_cast<std::int16_t>(mouse_mailbox_mode), t3), 0U,
     addiu(t4, t3, -1),
-    encodeBranch(0x05U, t4, zero, input_yaw_arena + 16U, input_yaw_arena + 128U), 0U,
-    lw(t4, 0x164, v0), 0U, addiu(t5, t4, -1),
-    encodeBranch(0x04U, t5, zero, input_yaw_arena + 36U, input_yaw_arena + 56U), 0U,
-    addiu(t5, t4, -10),
-    encodeBranch(0x05U, t5, zero, input_yaw_arena + 48U, input_yaw_arena + 104U), 0U,
+    encodeBranch(0x05U, t4, zero, input_yaw_arena + 16U, input_yaw_arena + 140U), 0U,
+    lw(t4, 0x164, v0), 0U, sltiu(t5, t4, 31U),
+    encodeBranch(0x04U, t5, zero, input_yaw_arena + 36U, input_yaw_arena + 116U), 0U,
+    lui(t5, static_cast<std::uint16_t>(free_facing_state_mask >> 16U)),
+    ori(t5, t5, static_cast<std::uint16_t>(free_facing_state_mask)),
+    srlv(t5, t5, t4), andi(t5, t5, 1U),
+    encodeBranch(0x04U, t5, zero, input_yaw_arena + 60U, input_yaw_arena + 116U), 0U,
     lui(t5, 0x800EU), lw(t6, static_cast<std::int16_t>(mouse_mailbox_yaw), t5), 0U,
     sw(t6, 0x2C, v0), addu(t1, t6, zero), sw(zero, 0x1BC, gp), sh(zero, 0xD70, gp),
     lui(t5, 0x8000U), addiu(t6, zero, 1),
     sw(t6, static_cast<std::int16_t>(extension_last_mode), t5),
-    encodeJump(input_yaw_arena + 212U), 0U,
+    encodeJump(input_yaw_arena + 236U), 0U,
     lui(t5, 0x8000U), addiu(t6, zero, 1),
     sw(t6, static_cast<std::int16_t>(extension_last_mode), t5), lw(t1, 0x2C, v0),
-    encodeJump(input_yaw_arena + 212U), 0U,
+    encodeJump(input_yaw_arena + 236U), 0U,
     lui(t5, 0x8000U), lw(t6, static_cast<std::int16_t>(extension_last_mode), t5), 0U,
     sw(zero, static_cast<std::int16_t>(extension_last_mode), t5), addiu(t6, t6, -1),
-    encodeBranch(0x05U, t6, zero, input_yaw_arena + 148U, input_yaw_arena + 208U), 0U,
-    lw(t4, 0x164, v0), 0U, addiu(t5, t4, -1),
-    encodeBranch(0x04U, t5, zero, input_yaw_arena + 168U, input_yaw_arena + 188U), 0U,
-    addiu(t5, t4, -10),
-    encodeBranch(0x05U, t5, zero, input_yaw_arena + 180U, input_yaw_arena + 208U), 0U,
-    lw(t1, 0x114, v0), 0U, sw(t1, 0x2C, v0), encodeJump(input_yaw_arena + 212U), 0U,
+    encodeBranch(0x05U, t6, zero, input_yaw_arena + 160U, input_yaw_arena + 232U), 0U,
+    lw(t4, 0x164, v0), 0U, sltiu(t5, t4, 31U),
+    encodeBranch(0x04U, t5, zero, input_yaw_arena + 180U, input_yaw_arena + 232U), 0U,
+    lui(t5, static_cast<std::uint16_t>(free_facing_state_mask >> 16U)),
+    ori(t5, t5, static_cast<std::uint16_t>(free_facing_state_mask)),
+    srlv(t5, t5, t4), andi(t5, t5, 1U),
+    encodeBranch(0x04U, t5, zero, input_yaw_arena + 204U, input_yaw_arena + 232U), 0U,
+    lw(t1, 0x114, v0), 0U, sw(t1, 0x2C, v0),
+    encodeJump(input_yaw_arena + 236U), 0U,
     lw(t1, 0x2C, v0),
 };
 
@@ -261,12 +353,36 @@ struct MousePatchDefinition {
         MousePatchDefinition{{"mouse_heading_ownership", ownership_site,
                               ownership_window[4], ownership_arena, 0x800303E0U,
                               ownership_body}, ownership_window, ownership_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_run_jump_force", run_jump_force_site,
+                              run_jump_force_window[4], run_jump_force_arena,
+                              0x800309B8U, run_jump_force_body},
+                             run_jump_force_window, run_jump_force_site - 16U, 4U},
         MousePatchDefinition{{"mouse_stand_move", stand_move_site,
                               stand_move_window[4], stand_move_arena, 0x8003153CU,
                               stand_move_body}, stand_move_window, stand_move_site - 16U, 4U},
         MousePatchDefinition{{"mouse_stand_face", stand_face_site,
                               stand_face_window[4], stand_face_arena, 0x800319B0U,
                               stand_face_body}, stand_face_window, stand_face_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_flip_face_first", flip_face_first_site,
+                              flip_face_first_window[4], flip_face_first_arena,
+                              0x80031B48U, flip_face_first_body},
+                             flip_face_first_window, flip_face_first_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_flip_face_second", flip_face_second_site,
+                              flip_face_second_window[4], flip_face_second_arena,
+                              0x80031BECU, flip_face_second_body},
+                             flip_face_second_window, flip_face_second_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_jump_face_first", jump_face_first_site,
+                              jump_face_first_window[4], jump_face_first_arena,
+                              0x80032068U, jump_face_first_body},
+                             jump_face_first_window, jump_face_first_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_jump_face_second", jump_face_second_site,
+                              jump_face_second_window[4], jump_face_second_arena,
+                              0x800321B4U, jump_face_second_body},
+                             jump_face_second_window, jump_face_second_site - 16U, 4U},
+        MousePatchDefinition{{"mouse_fall_face", fall_face_site,
+                              fall_face_window[4], fall_face_arena,
+                              0x800323E0U, fall_face_body},
+                             fall_face_window, fall_face_site - 16U, 4U},
         MousePatchDefinition{{"mouse_run_stop", run_stop_site,
                               run_stop_window[4], run_stop_arena, 0x80032720U,
                               run_stop_body}, run_stop_window, run_stop_site - 16U, 4U},
@@ -376,7 +492,7 @@ MouseHeadingDiagnostic mouseHeadingDiagnostic(
         angle16(context.player_yaw), angle16(context.travel_yaw),
         signedAngleDelta(context.player_yaw, context.travel_yaw)};
     if (result.signed_delta != 0) {
-        result.kind = context.action_state == 1U || context.action_state == 10U
+        result.kind = freeFacingState(context.action_state)
             ? MouseHeadingSplitKind::free_lease
             : MouseHeadingSplitKind::context;
     }
@@ -413,7 +529,7 @@ MouseYawController::MouseYawController(MouseControlConfig config) noexcept
       turn_acceleration_{std::clamp(config.turn_acceleration, 60U, 10'000U)} {}
 
 bool MouseYawController::freeFacingLease(std::uint32_t action_state) noexcept {
-    return action_state == 1U || action_state == 10U;
+    return freeFacingState(action_state);
 }
 
 void MouseYawController::setMode(MouseMovementMode mode) noexcept {
@@ -488,8 +604,9 @@ void MouseYawController::update(
         last_gesture_yaw_ = gesture_yaw;
         gesture_active_ = true;
         // Do not queue arbitrarily many rotations when a tight mouse circle
-        // outruns the physical turn limit. Retain at most a quarter-turn of
-        // lead, which preserves direction while keeping release responsive.
+        // outruns the physical turn limit. Retain at most a half-turn of
+        // lead. A half-turn still permits every absolute direction while
+        // preventing a circular gesture from banking extra revolutions.
         target_yaw_ = continuous_yaw_ + std::clamp(
             target_yaw_ - continuous_yaw_,
             -maximum_target_lead, maximum_target_lead);
@@ -561,8 +678,8 @@ std::string_view mouseMovementModeName(MouseMovementMode mode) noexcept {
 
 bool setMouseControlPatches(psx::R3000Runtime& runtime, bool enabled) noexcept {
     const auto definitions = mousePatches();
-    std::array<bool, 6U> installed{};
-    std::array<bool, 6U> stock{};
+    std::array<bool, 12U> installed{};
+    std::array<bool, 12U> stock{};
     for (std::size_t index = 0U; index < definitions.size(); ++index) {
         const auto& definition = definitions[index];
         installed[index] = trampolineInstalled(runtime, definition.trampoline) &&

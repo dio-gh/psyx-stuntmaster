@@ -77,13 +77,13 @@ shortest wrapped arc; maximum speed and acceleration prevent tight gestures or
 the `atan2` wrap point from producing an instantaneous flip. Stopping the mouse
 finishes the bounded turn toward the last requested direction. Consecutive
 gesture angles are unwrapped through zero so a circle keeps its direction, and
-queued lead is capped at one quarter-turn so a tight circle cannot bank an
-arbitrarily long spin.
+queued lead is capped at one half-turn so every absolute direction remains
+reachable while a tight circle cannot bank extra revolutions.
 
 ```ini
 mouse.movement_mode=camera_relative
-mouse.turn_rate=540
-mouse.turn_acceleration=2160
+mouse.turn_rate=720
+mouse.turn_acceleration=10000
 ```
 
 The tuning values are degrees per second and degrees per second squared.
@@ -95,11 +95,13 @@ The tuning values are degrees per second and degrees per second squared.
   entering the slower, targeting-aware Strafe state.
 - `off`: stock movement and facing, no mouse actions, and no cursor capture.
 
-Only ordinary Stand and Run grant mouse ownership of body yaw. Attacks,
-interactions, air movement, traversal, reactions, and scripts take explicit
-ownership at action transitions; relative orientation gestures are discarded
-while a context owns facing and re-entry reseeds from the live body without a
-snap. Explicit retail Strafe retains its normal targeting behavior.
+Stand, Run, running/standing Jump, Fall/HardFall, and launcher Flip variants
+grant mouse ownership of body yaw. Their movement force remains
+camera-relative through `faceAngle`; attacks, interactions, grounded traversal,
+reactions, and scripts take explicit ownership at action transitions. Relative
+orientation gestures are discarded while those contexts own facing and
+re-entry reseeds from the live body without a snap. Explicit retail Strafe
+retains its normal targeting behavior.
 The legacy `mouse.sensitivity` setting from the first experimental build is
 still accepted so an existing `input.ini` starts normally, but the bounded
 controller uses `turn_rate` and `turn_acceleration` instead. Cursor capture

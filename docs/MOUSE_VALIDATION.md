@@ -1,6 +1,6 @@
 # Mouse control live validation
 
-Phase 3 automated coverage executes all six fingerprinted guest seams, the
+Phase 4 automated coverage executes all twelve fingerprinted guest seams, the
 complete action-ownership classification, current-frame yaw publication,
 directional Run animations, bounded host turning, context handoff, install and
 revert. Phase 4 is the live campaign pass for gameplay feel and unusual retail
@@ -40,11 +40,15 @@ Use this pass:
    explicit Strafe where available. Context entry must claim the appropriate
    heading and retain its stock movement, targeting, collision, and speed.
    Returning to Stand/Run must not replay mouse motion made during the context.
-7. Watch the heading diagnostic. A deliberate body/travel split during Stand
-   or Run shows `HEADING SPLIT: FREE LEASE`. A split in any contextual state
-   shows `HEADING SPLIT: CONTEXT` and is the suspicious case to report. The
-   console log includes state, body yaw, travel yaw, and signed delta; it logs
-   transitions and rate-limits a continuing split to once per second.
+   In particular, jumping while facing opposite the held travel direction must
+   preserve mouse-facing through takeoff, apex, fall, and landing; jump force
+   must still follow the held camera-relative direction.
+7. Watch the heading diagnostic. Expected locomotion/airborne splits are
+   console-only. A split that remains continuously in a retail-owned context
+   for half a second shows `HEADING SPLIT: CONTEXT`; brief combat/action
+   transitions no longer interrupt play with notifications. Console lines
+   include state, body yaw, travel yaw, and signed delta, and a continuing
+   split is rate-limited to once per second.
 8. Press F10 for off. Capture and mouse actions should stop, and ordinary stock
    movement/facing should return without a snap. Press F10 again to restore
    camera-relative mouse control.
@@ -60,8 +64,8 @@ Useful configuration:
 
 ```ini
 mouse.movement_mode=camera_relative
-mouse.turn_rate=540
-mouse.turn_acceleration=2160
+mouse.turn_rate=720
+mouse.turn_acceleration=10000
 mouse.punch=Left
 mouse.kick=Right
 mouse.grab=Middle

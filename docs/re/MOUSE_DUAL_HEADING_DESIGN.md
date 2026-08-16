@@ -1,8 +1,8 @@
 # Mouse dual-heading design
 
-Status: Phase 3 implemented and emulator-tested, 2026-08-16. This document
-records the selected architecture and its executable realization. Campaign
-and feel validation remain the Phase 4 gate.
+Status: Phase 4.1 air-ownership correction implemented and emulator-tested,
+2026-08-16. This document records the selected architecture and its executable
+realization. Campaign and feel validation remain the Phase 4 gate.
 
 ## Decision
 
@@ -12,16 +12,18 @@ an explicit, narrow lifetime:
 - `Humanoid+0x114` (`faceAngle`) remains camera-relative travel intent.
 - `Thing+0x2c` (`orientation.y`) is the official visible, combat, perception,
   pickup, and interaction heading.
-- Only ordinary Player Stand and Run hold the **free-facing lease**, in which
-  the fields may differ and mouse yaw owns `orientation.y`.
+- Player Stand, Run, running/standing Jump, Fall/HardFall, and launcher Flip
+  variants hold the **free-facing lease**, in which the fields may differ and
+  mouse yaw owns `orientation.y`.
 - Every other action owns its authored/context heading. On an ownership
   transition the guest extension either commits aim, commits travel, or leaves
   the transition to the retail surface/target code, then stops applying mouse
-  yaw until ordinary Stand or Run resumes.
+  yaw until a leased state resumes.
 
 This is not a render-only rotation and it is not a state denylist. The positive
-lease has exactly two retail locomotion handlers. Everything else remains
-retail-owned by default.
+lease contains only the retail free-locomotion and ordinary air states whose
+physics already consume `faceAngle`. Everything else remains retail-owned by
+default.
 
 Retail Move/action 2 remains unchanged. Ordinary movement remains `AS_RUN` at
 full speed. `AS_STRAFE` is entered only if the player explicitly requests the
@@ -39,7 +41,7 @@ consumers require no redirection:
 | enemy FOV and relative-facing decisions | mouse/body | AI observes what Jackie appears to face |
 | pickup reach, table fields, and pushable engagement | mouse/body | interactions use the official visible front |
 | Run force and ordinary camera-relative movement | `faceAngle` | retail already applies force along travel intent |
-| jump/fall/launcher air steering | `faceAngle`, committed at action entry | action 2 and retail contextual physics remain intact |
+| jump/fall/launcher air steering | `faceAngle` for force, mouse/body for visible heading | action 2 and retail contextual physics remain intact without an entry snap |
 | climb, ledge, ladder, pole, push, throw, counter, and fighting handlers | context-normalized retail fields | the owning action may turn both fields without input interference |
 
 The exact executable already routes the camera edge-look-ahead through
@@ -78,10 +80,10 @@ slot before stack allocation.
 
 | Ownership class | Destination states | Entry normalization |
 | --- | --- | --- |
-| Free-facing | Stand `1`, Run `10` | preserve `faceAngle`; mouse may own `orientation.y` |
-| Travel-commit | player running jump `6`, standing jump `8`, dive roll `12`, Fall/HardFall/HardLand `13`–`15`, Flip `16`–`17`, Slope Slide `20`, Table Roll `21`, Hotfoot `30` | copy `faceAngle` to `orientation.y`, then retail owns both |
+| Free-facing | Stand `1`, player running jump `6`, standing jump `8`, Run `10`, Fall/HardFall `13`–`14`, Flip `16`–`17` | preserve `faceAngle`; mouse may own `orientation.y` |
+| Travel-commit | dive roll `12`, Slope Slide `20`, Table Roll `21`, Hotfoot `30` | copy `faceAngle` to `orientation.y`, then retail owns both |
 | Aim/contact-commit | Push Object `19`, Push `22`, combat/interaction range `32`–`45` | copy `orientation.y` to `faceAngle`, then retail owns both |
-| Context-retail | every other state, including explicit Strafe `11`, wall/ledge/ladder/pole states, reactions, death, and NIS `73` | do not alter either field; the existing caller/handler owns alignment |
+| Context-retail | every other state, including explicit Strafe `11`, HardLand `15`, wall/ledge/ladder/pole states, reactions, death, and NIS `73` | do not alter either field; the existing caller/handler owns alignment |
 
 The table is semantic and fail-closed: an unknown or unused state receives no
 mouse write. It does not attempt to enumerate all states where mouse input must
@@ -92,16 +94,17 @@ Concrete consequences:
 - push engagement uses visible facing, then synchronizes `faceAngle` to that
   contact frame, so `_Push` does not fail its 4552-angle test and
   `_PushObject` does not turn back toward the old travel vector;
-- a running jump, dive roll, fall, launcher flip, slope, or table roll starts
-  in camera-relative travel direction;
+- a running/standing jump, fall, or launcher flip keeps visible mouse-facing
+  while its force and steering continue in camera-relative travel direction;
+- dive roll, slope, table roll, and hotfoot commit visible facing to travel;
 - punch, kick, grab, pickup, throw, counter, and their derived variants start
   from mouse-facing body yaw, after which fighting/target code may author turns;
 - ledges, ladders, poles, wall jumps, hits, scripts, and NIS retain their
   existing alignment code without a mouse-state exception.
 
 While a context owns heading, the host keeps mouse capture and semantic button
-input active but discards relative orientation gestures. When Stand or Run
-regains the lease, yaw is reseeded from the live body before accepting the next
+input active but discards relative orientation gestures. When a leased state
+regains ownership, yaw is reseeded from the live body before accepting the next
 non-zero gesture. Context motion therefore cannot queue a surprise snap.
 
 ## Free locomotion changes
@@ -147,6 +150,25 @@ that stop transition. Mouse mode substitutes the authored Strafe idle animation
 body/travel mismatch. Explicit dive rolls use different call sites and are not
 affected.
 
+### Airborne states
+
+Retail could assume body and travel agreed, so state entry alone is not a
+sufficient ownership seam. `_Jump`, `_Flip`, and `FallingPhysics` repeatedly
+call `FaceAngleY(faceAngle)` and would reclaim visible facing after takeoff.
+Five fingerprinted call-site seams suppress those calls only while their
+matching air lease remains active:
+
+- `_Flip`: `0x80031B40` and `0x80031BE4`;
+- `_Jump`: `0x80032060` and `0x800321AC`;
+- `FallingPhysics`: `0x800323D8`.
+
+The running-jump launch at `0x800309B0` is the inverse boundary: retail passes
+`&orientation` to `AddForce`. Mouse mode constructs a temporary vector with
+the retail X/Z components and `faceAngle` as Y, so launch direction follows
+camera-relative travel without overwriting the official body. Subsequent air
+physics already consumes `faceAngle`. Off mode executes the original call and
+argument exactly.
+
 ## Bounded mouse-heading controller
 
 The two-axis gesture still selects the absolute camera-relative target with
@@ -165,15 +187,18 @@ command a nearly full-circle reversal. A stopped mouse completes the bounded
 turn toward the last target. Consecutive non-zero gesture samples are unwrapped
 against each other, rather than against the lagging body, so a fast circle
 cannot reverse merely by lapping the controller. Target lead is capped at one
-quarter-turn, preventing that circle from banking an arbitrarily long spin.
+half-turn: every absolute direction remains reachable, but a circle cannot bank
+extra revolutions.
 Context entry discards target and velocity; free-lease re-entry reseeds from
 live body yaw before accepting another gesture.
 
 The host also compares official body yaw with travel yaw while mouse mode is
-active. A split during Stand/Run is classified as expected `free_lease`; a
-split in any other action is classified as suspicious `context`. Transitions
-show an on-screen message, and the console logs state plus both angles and the
-signed delta, rate-limited to once per second for a persistent split.
+active. A split during any leased locomotion/air state is classified as
+expected `free_lease`; a split in any other action is classified as suspicious
+`context`. Expected splits are console-only. An unexpected context split must
+remain continuous for half a second before an on-screen message appears. The
+console logs state plus both angles and the signed delta on transitions and at
+most once per second for a persistent split.
 
 ## Exact hook proof
 
@@ -183,15 +208,21 @@ windows in the supported image are:
 | Site | Retail word | Neighboring proof | Purpose |
 | --- | ---: | --- | --- |
 | `0x800303D8` | `AFBF0040` | `AFB40038 00A0A021 AFB30034 00C09821 [AFBF0040] AFB5003C AFB20030 AFB00028 8E220058` | action ownership transition |
+| `0x800309B0` | `0C0186D1` | `00C03821 8E2202C8 02202021 8C450000 [0C0186D1] 26260028 8E2302B8 240205DC A6220156` | running-jump force yaw |
 | `0x80031534` | `14430024` | `8E020114 00000000 [14430024] 00000000 8E020268 00000000` | Stand movement comparison |
 | `0x800319A8` | `0C0193AC` | `00000000 8F850D6C [0C0193AC] 24060001 8E040050 00000000` | Stand final facing |
+| `0x80031B40` | `0C0193AC` | `AFA20014 8E250114 96300156 24021388 [0C0193AC] A6220156 02202021 8E2500D4 27A60010` | Flip initial facing |
+| `0x80031BE4` | `0C0193AC` | `02202021 02202021 8E250114 24060001 [0C0193AC] 00000000 02202021 02002821 27A60020` | Flip repeated facing |
+| `0x80032060` | `0C0193AC` | `00000000 1040009B 02002021 8E050114 [0C0193AC] 24060001 860202C0 00000000 1040000F` | Jump initial facing |
+| `0x800321AC` | `0C0193AC` | `AFA80018 AFA9001C AFAA0020 8E050114 [0C0193AC] 24060001 AFA00020 AFA00018 8E020114` | Jump repeated facing |
+| `0x800323D8` | `0C0193AC` | `AFA70010 AFA80014 AFA90018 8E250114 [0C0193AC] 24060001 3C10800D 02202021 8E056550` | Fall repeated facing |
 | `0x80032718` | `0040F809` | `8C420014 00000000 [0040F809] 00003821 0800CA8D 00000000` | Run stop animation |
 | `0x8003291C` | `0C0193AC` | `00000000 8E050114 [0C0193AC] 24060001 8E020058 00000000` | Run facing and directional animation |
 | `0x80075174` | `8C49002C` | `00000000 8C480028 [8C49002C] 8C4A0030 AFA80018 AFA9001C` | current-yaw snapshot before command direction |
 
 Every hook can re-execute or emulate its one displaced instruction and has an
 unambiguous rejoin. Stock/off behavior therefore remains byte-for-byte
-expressible. Installation must verify all six complete windows before changing
+expressible. Installation must verify all twelve complete windows before changing
 any site and must roll the entire set back if one write fails.
 
 The old `0x80075398` action trampoline and `0x80034010` Strafe-target
@@ -211,7 +242,7 @@ guest-extension code/data arena at `0x80004800`–`0x800057FF`:
 - the boot executable and all four exact retail overlays have zero direct
   J/JAL, GP-relative, or LUI-plus-immediate references into the proposed range.
 
-The arena holds the six trampoline bodies, a shared ownership/animation helper,
+The arena holds the twelve trampoline bodies, a shared ownership/animation helper,
 and only transient words such as last published mode. No retail object is
 grown, no save structure changes, and no unused Player field is guessed.
 
@@ -223,12 +254,13 @@ the direct-pad buffer. The wire mode collapses to `0=off`, `1=mouse`; the
 
 - Enabling seeds yaw from current `orientation.y`, clears the retail
   turn-around latch/timer, and does not rotate Jackie until a new gesture.
-- Disabling during Stand/Run copies `faceAngle` to `orientation.y` once, then
+- Disabling during a free-facing lease copies `faceAngle` to `orientation.y`
+  once, then
   every hook executes stock behavior. Disabling in a context leaves the
   context's heading untouched.
 - Focus loss, pause, photo mode, invalid object graphs, and non-player control
   discard motion and release capture exactly as before.
-- Quick saves normalize all six sites and the extension arena out of the saved
+- Quick saves normalize all twelve sites and the extension arena out of the saved
   runtime. Load reapplies the fingerprinted set transactionally and reseeds
   transient yaw/lease state from the live Player.
 - Any fingerprint mismatch, invalid pointer, unknown state, or malformed live
@@ -247,8 +279,9 @@ emulator tests, fingerprint checks, and executable-control-flow audit cover:
 4. current-frame mouse yaw feeding the retail directional-command decoder;
 5. aim-commit attacks, grabs, pickups, throws, push entry, and enemy-facing
    reads;
-6. travel-commit standing/running jumps, dive roll, fall, launcher, slope,
-   table roll, and hotfoot;
+6. independent body/travel headings through running/standing jump, fall, and
+   launcher Flip, including travel-directed running-jump force; travel commits
+   for dive roll, slope, table roll, and hotfoot;
 7. untouched ownership for wall, ledge, ladder, pole, reaction, death, NIS,
    explicit Strafe, pause, and front-end paths;
 8. push-angle retention and force agreement after contact claim;
@@ -265,9 +298,9 @@ emulator tests, fingerprint checks, and executable-control-flow audit cover:
 The architecture is feasible without taking over the input subsystem and
 without patching every consumer. It uses retail's existing travel field,
 official body field, action decoder, Move state, force paths, context handlers,
-and authored directional animation assets. Six resident, reversible seams add
-the missing ownership contract at the points where retail previously assumed
-body and travel were identical.
+and authored directional animation assets. Twelve resident, reversible seams
+add the missing ownership contract at the points where retail previously
+assumed body and travel were identical.
 
 The remaining uncertainty is gameplay feel rather than an unproven engine
 dependency. Animation transitions and context handoffs now have Phase 3
